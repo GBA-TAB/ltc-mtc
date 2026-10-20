@@ -7,6 +7,7 @@ mod engine;
 mod ltc;
 mod midi;
 mod mtc;
+mod osc;
 mod tc;
 mod web;
 
@@ -67,6 +68,8 @@ pub struct Status {
     /// Where the MTC port is connected.
     pub mtc_port: Option<String>,
     pub midi_error: Option<String>,
+    /// OSC targets: resolved address, errors, messages sent.
+    pub osc: Vec<osc::TargetStatus>,
     pub next_event: Option<NextEvent>,
     pub last_fired: Option<String>,
     pub fired_seq: u64,

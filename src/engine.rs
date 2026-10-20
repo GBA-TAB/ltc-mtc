@@ -16,7 +16,8 @@ use crate::midi::Midi;
 use crate::tc::{labels_per_day, Fps, Tc};
 use crate::{local_time, App, EngineMsg, LogEntry, NextEvent};
 use std::collections::VecDeque;
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use crate::osc::OscMsg;
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -71,12 +72,14 @@ struct Engine {
     qf_tc: Tc,
     pending: VecDeque<(Instant, u8)>,
     last_midi_check: Option<Instant>,
+    osc: Sender<OscMsg>,
+    osc_targets: Vec<String>,
 }
 
 pub fn run(app: Arc<App>, rx: Receiver<EngineMsg>) {
     crate::set_realtime(60);
     let mut e = Engine {
-        app,
+        app: app.clone(),
         midi: None,
         events: Vec::new(),
         mtc_enabled: true,
@@ -90,6 +93,8 @@ pub fn run(app: Arc<App>, rx: Receiver<EngineMsg>) {
         qf_tc: Tc::default(),
         pending: VecDeque::new(),
         last_midi_check: None,
+        osc: crate::osc::spawn(app.clone()),
+        osc_targets: Vec::new(),
     };
     e.reload();
     loop {
@@ -132,6 +137,8 @@ impl Engine {
             self.mtc_enabled = c.mtc_enabled;
             self.max_gap = c.max_gap_frames.max(1);
             self.fixed_fps = c.fixed_fps();
+            self.osc_targets = c.osc_targets.iter().map(|t| t.name.clone()).collect();
+            let _ = self.osc.send(OscMsg::Targets(c.osc_targets.clone()));
         }
         self.last_midi_check = None;
         self.tick();
@@ -344,10 +351,19 @@ impl Engine {
     }
 
     fn send(&self, c: &Command) -> Result<(), String> {
+        if let Command::Osc { target, address, args } = c {
+            if !self.osc_targets.iter().any(|t| t == target) {
+                return Err(format!("OSC target '{target}' unknown (saved?)"));
+            }
+            // Delivery happens on the OSC thread; its errors show per target in the status.
+            let packet = crate::osc::encode(address, args);
+            return self.osc.send(OscMsg::Send { target: target.clone(), packet }).map_err(|e| e.to_string());
+        }
         let m = self.midi.as_ref().ok_or("no ALSA sequencer")?;
         match c {
             Command::ControlChange { channel, controller, value, output } => m.control_change(output, *channel, *controller, *value),
             Command::ProgramChange { channel, program, output } => m.program_change(output, *channel, *program),
+            Command::Osc { .. } => unreachable!(),
         }
     }
 

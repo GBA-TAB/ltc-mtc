@@ -31,7 +31,7 @@ button.icon:hover { color: var(--bad); }
 input, select { background: var(--input); color: var(--text); border: 1px solid var(--line); border-radius: 5px;
   padding: 5px 7px; font: inherit; min-width: 0; }
 input:focus, select:focus { outline: none; border-color: var(--accent); }
-input.bad { border-color: var(--bad); }
+input.bad, select.bad { border-color: var(--bad); }
 input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); }
 main { padding: 16px; display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; max-width: 1400px; margin: 0 auto; }
 @media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); } }
@@ -83,6 +83,16 @@ main { padding: 16px; display: grid; grid-template-columns: minmax(0, 1fr) 340px
 .hint { font-size: 12px; color: var(--dim); margin: 2px 0 0; }
 hr { border: 0; border-top: 1px solid var(--line); margin: 14px 0 12px; }
 .cmd select.out { width: 190px; max-width: 100%; }
+.cmd input.addr { width: 200px; font-family: var(--mono); }
+.cmd select.atype { width: 82px; }
+.cmd input.aval { width: 90px; }
+.args { display: contents; }
+.arg { display: inline-flex; gap: 4px; align-items: center; padding: 2px 4px; border: 1px dashed var(--line); border-radius: 6px; }
+.targets { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+.target { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel2); }
+.target input, .target select { width: 100%; }
+.target .tstat { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: var(--dim); }
+.target .tstat.bad { color: var(--bad); }
 .err { color: var(--bad); font-size: 12px; }
 .log { font-family: var(--mono); font-size: 12px; max-height: 320px; overflow: auto; display: flex; flex-direction: column; gap: 4px; }
 .log div { border-bottom: 1px solid var(--line); padding-bottom: 4px; }
@@ -115,6 +125,7 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 14px 0 12px; }
         <span id="b-speed" class="badge">speed &ndash;</span>
         <span id="b-midi" class="badge">MIDI &ndash;</span>
         <span id="b-mtc" class="badge">MTC</span>
+        <span id="b-osc" class="badge" hidden>OSC</span>
       </div>
       <div class="meterrow"><span>LTC in</span><div class="meter"><i id="meter"></i></div><span id="db">-inf dB</span></div>
       <div id="next" class="next">&nbsp;</div>
@@ -163,6 +174,12 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 14px 0 12px; }
       <label class="field"><span>MTC output</span><select id="s-mtcout"></select></label>
       <p class="hint">Other programs can also connect to <b>LTC-MTC:out</b> (commands) and
         <b>LTC-MTC:mtc</b> with aconnect.</p>
+    </section>
+    <section class="card">
+      <h2>OSC targets</h2>
+      <div id="osc-targets" class="targets"></div>
+      <button id="add-target" class="small">+ Target</button>
+      <p class="hint">OSC commands pick a target by name. Renaming a target updates its commands.</p>
     </section>
     <section class="card">
       <h2>Fired</h2>
@@ -320,14 +337,18 @@ function renderCmd(ev, c, idx) {
   const type = el("select", { class: "type" });
   opt(type, "cc", "Control Change");
   opt(type, "pc", "Program Change");
+  opt(type, "osc", "OSC");
   type.value = c.type;
   type.onchange = () => {
-    const ch = c.channel;
+    const ch = c.channel || 1;
     const output = c.output || "";
-    ev.commands[idx] = type.value === "cc" ? { type: "cc", channel: ch, controller: 0, value: 0, output } : { type: "pc", channel: ch, program: 0, output };
+    ev.commands[idx] = type.value === "cc" ? { type: "cc", channel: ch, controller: 0, value: 0, output }
+      : type.value === "pc" ? { type: "pc", channel: ch, program: 0, output } : newOsc(ev);
     markDirty(); renderEvents();
   };
-  row.append(type, el("label", {}, "Ch", chSelect(c.channel, (v) => (c.channel = v))));
+  row.append(type);
+  if (c.type === "osc") return renderOsc(ev, c, idx, row);
+  row.append(el("label", {}, "Ch", chSelect(c.channel, (v) => (c.channel = v))));
   if (c.type === "cc") {
     row.append(el("label", {}, "CC#", numInput(c.controller, 0, 127, (v) => (c.controller = v), "Controller number 0-127")),
       el("label", {}, "Value", numInput(c.value, 0, 127, (v) => (c.value = v), "Value 0-127")));
@@ -340,6 +361,121 @@ function renderCmd(ev, c, idx) {
   row.append(el("label", {}, "→", out));
   row.append(el("button", { class: "icon", title: "Remove command", onclick: () => { ev.commands.splice(idx, 1); markDirty(); renderEvents(); } }, "✕"));
   return row;
+}
+
+const OSC_ADDR_RE = /^\/[!-~]*$/;
+const oscAddrOk = (a) => OSC_ADDR_RE.test(a) && !/[#*,?\[\]{}]/.test(a);
+function newOsc(ev) {
+  const last = [...ev.commands].reverse().find((c) => c.type === "osc");
+  const target = last ? last.target : cfg.osc_targets.length ? cfg.osc_targets[0].name : "";
+  return { type: "osc", target, address: "/", args: [] };
+}
+function renderOsc(ev, c, idx, row) {
+  const tgt = el("select", { class: "out", title: "OSC target" });
+  const names = cfg.osc_targets.map((t) => t.name);
+  if (!names.length) opt(tgt, "", "— add a target in Settings —");
+  for (const n of names) opt(tgt, n, n);
+  if (c.target && !names.includes(c.target)) opt(tgt, c.target, `${c.target} (missing)`);
+  tgt.value = c.target;
+  tgt.classList.toggle("bad", !names.includes(c.target));
+  tgt.onchange = () => { c.target = tgt.value; markDirty(); renderEvents(); };
+  const addr = el("input", { class: "addr", value: c.address, placeholder: "/cue/1/go", spellcheck: false, title: "OSC address" });
+  addr.classList.toggle("bad", !oscAddrOk(c.address));
+  addr.oninput = () => { c.address = addr.value.trim(); addr.classList.toggle("bad", !oscAddrOk(c.address)); markDirty(); };
+  row.append(el("label", {}, "→", tgt), addr);
+  const args = el("span", { class: "args" });
+  c.args.forEach((a, i) => args.append(renderArg(c, a, i)));
+  row.append(args,
+    el("button", { class: "small", title: "Add an argument", onclick: () => { c.args.push({ type: "int", value: 0 }); markDirty(); renderEvents(); } }, "+ arg"),
+    el("button", { class: "icon", title: "Remove command", onclick: () => { ev.commands.splice(idx, 1); markDirty(); renderEvents(); } }, "✕"));
+  return row;
+}
+function renderArg(c, a, i) {
+  const t = el("select", { class: "atype", title: "Argument type" });
+  for (const [v, l] of [["int", "int"], ["float", "float"], ["string", "string"], ["bool", "bool"]]) opt(t, v, l);
+  t.value = a.type;
+  t.onchange = () => {
+    c.args[i] = { type: t.value, value: t.value === "string" ? String(a.value ?? "") : t.value === "bool" ? !!a.value : Number(a.value) || 0 };
+    if (t.value === "int") c.args[i].value = Math.trunc(c.args[i].value);
+    markDirty(); renderEvents();
+  };
+  let v;
+  if (a.type === "bool") {
+    v = el("select", { class: "aval" });
+    opt(v, "true", "true"); opt(v, "false", "false");
+    v.value = String(!!a.value);
+    v.onchange = () => { a.value = v.value === "true"; markDirty(); };
+  } else {
+    v = el("input", { class: "aval", value: String(a.value), spellcheck: false });
+    v.oninput = () => {
+      let ok = true;
+      if (a.type === "string") a.value = v.value;
+      else {
+        const n = Number(v.value);
+        ok = v.value.trim() !== "" && Number.isFinite(n) && (a.type !== "int" || (Number.isInteger(n) && n >= -2147483648 && n <= 2147483647));
+        if (ok) a.value = n;
+      }
+      v.classList.toggle("bad", !ok);
+      markDirty();
+    };
+  }
+  return el("span", { class: "arg" }, t, v,
+    el("button", { class: "icon", title: "Remove argument", onclick: () => { c.args.splice(i, 1); markDirty(); renderEvents(); } }, "✕"));
+}
+
+/* ---------- OSC targets ---------- */
+const PROTOCOLS = [["udp", "UDP"]];
+function renderTargets() {
+  const box = $("osc-targets");
+  box.innerHTML = "";
+  if (!cfg.osc_targets.length) box.append(el("span", { class: "hint" }, "No targets."));
+  cfg.osc_targets.forEach((t, i) => {
+    const name = el("input", { value: t.name, placeholder: "Name (e.g. QLab)", title: "Name" });
+    name.onchange = () => {
+      const old = t.name, n = name.value.trim();
+      if (!n || cfg.osc_targets.some((o, j) => j !== i && o.name === n)) { name.classList.add("bad"); return; }
+      name.classList.remove("bad");
+      t.name = n;
+      for (const ev of cfg.events) for (const c of ev.commands) if (c.type === "osc" && c.target === old) c.target = n;
+      markDirty(); renderEvents();
+    };
+    const host = el("input", { value: t.host, placeholder: "Host or IP", title: "Host", spellcheck: false });
+    host.oninput = () => { t.host = host.value.trim(); host.classList.toggle("bad", !t.host); markDirty(); };
+    const port = el("input", { type: "number", min: 1, max: 65535, value: t.port, title: "Port" });
+    port.oninput = () => {
+      const n = Number(port.value), ok = Number.isInteger(n) && n >= 1 && n <= 65535;
+      port.classList.toggle("bad", !ok);
+      if (ok) { t.port = n; markDirty(); }
+    };
+    const proto = el("select", { title: "Protocol" });
+    for (const [v, l] of PROTOCOLS) opt(proto, v, l);
+    proto.value = t.protocol || "udp";
+    proto.onchange = () => { t.protocol = proto.value; markDirty(); };
+    const stat = el("div", { class: "tstat", "data-target": t.name }, el("span", {}, ""),
+      el("button", { class: "icon", title: "Delete target", onclick: () => {
+        const used = cfg.events.some((ev) => ev.commands.some((c) => c.type === "osc" && c.target === t.name));
+        if (used && !confirm(`Events use "${t.name}". Delete it anyway? (Their OSC commands must then get another target.)`)) return;
+        cfg.osc_targets.splice(i, 1); markDirty(); renderTargets(); renderEvents();
+      } }, "✕"));
+    box.append(el("div", { class: "target" }, name, host, port, proto, stat));
+  });
+  if (status) renderTargetStatus(status);
+}
+$("add-target").onclick = () => {
+  let n = cfg.osc_targets.length + 1;
+  while (cfg.osc_targets.some((t) => t.name === "Target " + n)) n++;
+  cfg.osc_targets.push({ name: "Target " + n, host: "", port: 53000, protocol: "udp" });
+  markDirty(); renderTargets(); renderEvents();
+};
+function renderTargetStatus(s) {
+  const byName = Object.fromEntries((s.osc || []).map((t) => [t.name, t]));
+  for (const d of document.querySelectorAll(".tstat")) {
+    const t = byName[d.dataset.target];
+    const span = d.firstChild;
+    if (!t) { span.textContent = "not saved yet"; d.classList.remove("bad"); continue; }
+    span.textContent = t.error ? t.error : `${t.addr || "…"} · ${t.sent} sent`;
+    d.classList.toggle("bad", !!t.error);
+  }
 }
 
 function renderEvents() {
@@ -381,12 +517,14 @@ function renderEvents() {
     card.append(cmds,
       el("div", { class: "cmd-add" },
         el("button", { class: "small", onclick: () => { ev.commands.push({ type: "cc", channel: lastCh(ev), controller: 0, value: 127, output: lastOut(ev) }); markDirty(); renderEvents(); } }, "+ CC"),
-        el("button", { class: "small", onclick: () => { ev.commands.push({ type: "pc", channel: lastCh(ev), program: 0, output: lastOut(ev) }); markDirty(); renderEvents(); } }, "+ PC")));
+        el("button", { class: "small", onclick: () => { ev.commands.push({ type: "pc", channel: lastCh(ev), program: 0, output: lastOut(ev) }); markDirty(); renderEvents(); } }, "+ PC"),
+        el("button", { class: "small", onclick: () => { ev.commands.push(newOsc(ev)); markDirty(); renderEvents(); } }, "+ OSC")));
     box.append(card);
   }
 }
-function lastOut(ev) { return ev.commands.length ? ev.commands[ev.commands.length - 1].output || "" : ""; }
-function lastCh(ev) { return ev.commands.length ? ev.commands[ev.commands.length - 1].channel : 1; }
+function lastMidi(ev) { return [...ev.commands].reverse().find((c) => c.type !== "osc"); }
+function lastOut(ev) { const c = lastMidi(ev); return c ? c.output || "" : ""; }
+function lastCh(ev) { const c = lastMidi(ev); return c ? c.channel : 1; }
 function sortEvents() { cfg.events.sort((a, b) => tcKey(a.time) - tcKey(b.time)); }
 
 function addEvent(time) {
@@ -399,6 +537,8 @@ function dupEvent(ev) {
   cfg.events.push(c); sortEvents(); markDirty(); renderEvents();
 }
 async function testEvent(ev) {
+  const savedTargets = new Set(((saved && saved.osc_targets) || []).map((t) => t.name));
+  if (ev.commands.some((c) => c.type === "osc" && !savedTargets.has(c.target))) return toast("Save first: the OSC target is new or changed", true);
   try { await api("POST", "/api/fire", { commands: ev.commands }); toast("Sent: " + (ev.name || ev.time)); }
   catch (e) { toast(e.message, true); }
 }
@@ -416,14 +556,18 @@ $("addnow").onclick = () => {
 async function loadConfig() {
   saved = await api("GET", "/api/config");
   cfg = JSON.parse(JSON.stringify(saved));
-  renderSettings(); renderEvents(); markDirty();
+  renderSettings(); renderTargets(); renderEvents(); markDirty();
 }
 async function save() {
   for (const ev of cfg.events) if (!normTc(ev.time)) return toast(`Bad time ${ev.time}`, true);
+  for (const t of cfg.osc_targets) if (!t.name || !t.host) return toast("Every OSC target needs a name and a host", true);
+  for (const ev of cfg.events) for (const c of ev.commands) {
+    if (c.type === "osc" && !oscAddrOk(c.address)) return toast(`Bad OSC address "${c.address}" (${ev.time})`, true);
+  }
   try {
     saved = await api("PUT", "/api/config", cfg);
     cfg = JSON.parse(JSON.stringify(saved));
-    renderSettings(); renderEvents(); markDirty();
+    renderSettings(); renderTargets(); renderEvents(); markDirty();
     toast("Saved");
   } catch (e) { toast("Not saved: " + e.message, true); }
 }
@@ -483,7 +627,13 @@ function renderStatus(s) {
   $("db").textContent = db <= -119 ? "-inf dB" : db.toFixed(1) + " dB";
   const n = s.next_event;
   $("next").innerHTML = n ? `Next: <b>${esc(n.name || "event")}</b> at <b>${n.time}</b> in ${fmtSec(n.seconds)}` : "&nbsp;";
-  const alerts = [s.audio_error, s.midi_error].filter(Boolean);
+  const osc = s.osc || [];
+  const oscBad = osc.filter((t) => t.error);
+  const b = $("b-osc");
+  b.hidden = !osc.length;
+  setBadge("b-osc", oscBad.length ? `OSC: ${oscBad.length} of ${osc.length} targets failing` : `OSC: ${osc.length} target${osc.length > 1 ? "s" : ""}`, oscBad.length ? "bad" : "ok");
+  renderTargetStatus(s);
+  const alerts = [s.audio_error, s.midi_error, ...oscBad.map((t) => `OSC ${t.name}: ${t.error}`)].filter(Boolean);
   $("alerts").textContent = alerts.join(" · ");
 
   if (lastFiredSeq !== null && s.fired_seq !== lastFiredSeq && s.last_fired) flash(s.last_fired);

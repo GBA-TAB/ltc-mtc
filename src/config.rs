@@ -1,5 +1,6 @@
 //! Settings and the event list, stored as JSON.
 
+use crate::osc::{OscArg, OscTarget};
 use crate::tc::{Fps, Tc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -20,6 +21,8 @@ pub struct Config {
     /// Output for MIDI Time Code; empty = no connection (LTC-MTC:mtc can still be connected).
     /// Missing in configs from before 0.2, which sent MTC to `midi_output`.
     pub mtc_output: Option<String>,
+    /// OSC destinations, chosen by name in OSC commands.
+    pub osc_targets: Vec<OscTarget>,
     /// "auto", "24", "25", "29.97df" or "30".
     pub fps_mode: String,
     /// Frames the reader may miss and still treat playback as continuous (events
@@ -37,6 +40,7 @@ impl Default for Config {
             midi_output: String::new(),
             mtc_enabled: true,
             mtc_output: None,
+            osc_targets: Vec::new(),
             fps_mode: "auto".into(),
             max_gap_frames: 4,
             events: Vec::new(),
@@ -83,6 +87,14 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "String::is_empty")]
         output: String,
     },
+    /// OSC message to a target from `osc_targets`.
+    #[serde(rename = "osc")]
+    Osc {
+        target: String,
+        address: String,
+        #[serde(default)]
+        args: Vec<OscArg>,
+    },
 }
 
 impl Command {
@@ -90,6 +102,11 @@ impl Command {
         let (text, output) = match self {
             Command::ControlChange { channel, controller, value, output } => (format!("CC ch{channel} #{controller}={value}"), output),
             Command::ProgramChange { channel, program, output } => (format!("PC ch{channel} {program}"), output),
+            Command::Osc { target, address, args } => {
+                let a: Vec<String> = args.iter().map(OscArg::describe).collect();
+                let text = if a.is_empty() { format!("OSC {address}") } else { format!("OSC {address} {}", a.join(" ")) };
+                return format!("{text} -> {target}");
+            }
         };
         if output.is_empty() {
             text
@@ -98,9 +115,11 @@ impl Command {
         }
     }
 
+    /// The MIDI output of a MIDI command ("" = default; also "" for OSC).
     pub fn output(&self) -> &str {
         match self {
             Command::ControlChange { output, .. } | Command::ProgramChange { output, .. } => output,
+            Command::Osc { .. } => "",
         }
     }
 }
@@ -148,6 +167,23 @@ impl Config {
             return Err(format!("unknown frame rate '{}'", self.fps_mode));
         }
         self.max_gap_frames = self.max_gap_frames.clamp(1, 30);
+        let mut names = HashSet::new();
+        for t in self.osc_targets.iter_mut() {
+            t.name = t.name.trim().to_string();
+            t.host = t.host.trim().to_string();
+            if t.name.is_empty() || !names.insert(t.name.clone()) {
+                return Err(format!("OSC target names must be set and unique ('{}')", t.name));
+            }
+            if t.host.is_empty() || t.host.contains(char::is_whitespace) {
+                return Err(format!("OSC target '{}': host missing", t.name));
+            }
+            if t.port == 0 {
+                return Err(format!("OSC target '{}': port 1-65535", t.name));
+            }
+            if !crate::osc::PROTOCOLS.contains(&t.protocol.as_str()) {
+                return Err(format!("OSC target '{}': unknown protocol '{}'", t.name, t.protocol));
+            }
+        }
         if self.mtc_output.is_none() {
             self.mtc_output = Some(self.midi_output.clone());
         }
@@ -164,9 +200,25 @@ impl Config {
             }
             e.time = tc.to_string();
             for c in &e.commands {
-                let (ch, a, b) = match *c {
-                    Command::ControlChange { channel, controller, value, .. } => (channel, controller, value),
-                    Command::ProgramChange { channel, program, .. } => (channel, program, 0),
+                let (ch, a, b) = match c {
+                    Command::ControlChange { channel, controller, value, .. } => (*channel, *controller, *value),
+                    Command::ProgramChange { channel, program, .. } => (*channel, *program, 0),
+                    Command::Osc { target, address, args } => {
+                        if !self.osc_targets.iter().any(|t| &t.name == target) {
+                            return Err(format!("event '{}': OSC target '{target}' is not in the target list", e.name));
+                        }
+                        if !crate::osc::valid_address(address) {
+                            return Err(format!("event '{}': OSC address '{address}' must start with / and have no spaces or * ? , # [ ] {{ }}", e.name));
+                        }
+                        for a in args {
+                            match a {
+                                OscArg::Float(f) if !f.is_finite() => return Err(format!("event '{}': OSC float must be a number", e.name)),
+                                OscArg::Str(s) if s.contains('\0') => return Err(format!("event '{}': OSC string with a NUL", e.name)),
+                                _ => {}
+                            }
+                        }
+                        continue;
+                    }
                 };
                 if !(1..=16).contains(&ch) || a > 127 || b > 127 {
                     return Err(format!("event '{}': {} out of range (channel 1-16, values 0-127)", e.name, c.describe()));
@@ -216,5 +268,26 @@ mod tests {
         assert_eq!(c.events[0].commands[0].output(), "");
         let json = serde_json::to_string(&c).unwrap();
         assert!(!json.contains(r#""output""#), "empty outputs are not written");
+    }
+
+    #[test]
+    fn osc_commands() {
+        let mut c: Config = serde_json::from_str(r#"{
+            "osc_targets": [{"name": "QLab", "host": "10.0.0.2", "port": 53000}],
+            "events": [{"time": "01:00:00:00", "commands": [
+                {"type": "osc", "target": "QLab", "address": "/cue/1/go"},
+                {"type": "osc", "target": "QLab", "address": "/x", "args": [{"type": "float", "value": 0.5}]}]}]}"#).unwrap();
+        c.validate().unwrap();
+        assert_eq!(c.osc_targets[0].protocol, "udp");
+        assert_eq!(c.events[0].commands[1].describe(), "OSC /x 0.5 -> QLab");
+        let mut bad = c.clone();
+        bad.events[0].commands[0] = Command::Osc { target: "Nope".into(), address: "/a".into(), args: vec![] };
+        assert!(bad.validate().is_err());
+        let mut bad = c.clone();
+        bad.events[0].commands[0] = Command::Osc { target: "QLab".into(), address: "cue".into(), args: vec![] };
+        assert!(bad.validate().is_err());
+        let mut bad = c;
+        bad.osc_targets.push(bad.osc_targets[0].clone());
+        assert!(bad.validate().is_err());
     }
 }
