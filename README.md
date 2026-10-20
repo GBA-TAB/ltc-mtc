@@ -164,7 +164,7 @@ a TCP target.
 
 ## Status
 
-Version 0.3 (2026-10-20). Tested on a Raspberry Pi 5 (Raspberry Pi OS trixie, arm64) with
+Version 0.3 (2026-10-20; changes in [CHANGELOG.md](CHANGELOG.md)). Tested on a Raspberry Pi 5 (Raspberry Pi OS trixie, arm64) with
 LTC played through `snd-aloop` at 24, 25, 29.97 drop-frame and 30 fps. The tests cover
 decoding, MTC (piece order, continuity, rate code), events on the exact frame, routing to
 separate outputs, MTC on and off, OSC over UDP and both TCP framings (timing within a few
