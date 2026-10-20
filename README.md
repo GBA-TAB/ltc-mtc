@@ -124,7 +124,7 @@ runs ltc-mtc on it with Midi Through as the output, and shows what `aseqdump` re
 `scripts/routing-test.sh` checks the routing: default commands, a command with its own
 output, and MTC on its own port, with MTC on and off.
 `scripts/ui-demo.sh start|stop` keeps LTC running for a look at the web interface on port
-8091.
+8088 (`LTC_DEMO_PORT` to change it).
 
 ## Building
 

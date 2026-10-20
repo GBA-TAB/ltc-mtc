@@ -1,11 +1,12 @@
 #!/bin/bash
 # Runs ltc-mtc on the loopback with LTC playing in a loop, for looking at the web UI.
-# Usage: scripts/ui-demo.sh start|stop   (after loopback-test.sh created the config and WAV)
+# Usage: [LTC_DEMO_PORT=8088] scripts/ui-demo.sh start|stop   (after loopback-test.sh created the config and WAV)
 DIR=${LTC_TEST_DIR:-$HOME/ltc-mtc-test}
+PORT=${LTC_DEMO_PORT:-8088}
 case "$1" in
 start)
   ./target/release/ltc-mtc gen "$DIR/loop.wav" --start 00:59:52:00 --fps 25 --seconds 600 --level -18 >/dev/null
-  nohup ./target/release/ltc-mtc --config "$DIR/config.json" --listen 0.0.0.0:8091 > "$DIR/demo.log" 2>&1 &
+  nohup ./target/release/ltc-mtc --config "$DIR/config.json" --listen 0.0.0.0:$PORT > "$DIR/demo.log" 2>&1 &
   echo $! > "$DIR/demo.pids"
   sleep 1
   # Plays the 10-minute file over and over (00:59:52:00 to 01:09:52:00).
