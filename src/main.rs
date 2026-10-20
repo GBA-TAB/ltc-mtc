@@ -62,7 +62,10 @@ pub struct Status {
     pub audio_error: Option<String>,
     pub sample_rate: u32,
     pub midi_ok: bool,
+    /// Where the commands port is connected (the default output).
     pub midi_port: Option<String>,
+    /// Where the MTC port is connected.
+    pub mtc_port: Option<String>,
     pub midi_error: Option<String>,
     pub next_event: Option<NextEvent>,
     pub last_fired: Option<String>,
@@ -120,7 +123,7 @@ ltc-mtc: SMPTE LTC reader -> MIDI Time Code + MIDI events on timecode
 
 usage:
   ltc-mtc [--config FILE] [--listen ADDR:PORT]
-      run, with the web interface (default 0.0.0.0:8080,
+      run, with the web interface (default 0.0.0.0:8088,
       config ~/.config/ltc-mtc/config.json)
   ltc-mtc devices
       list ALSA capture devices and MIDI (sequencer) outputs
@@ -172,7 +175,7 @@ fn serve(args: &[String]) -> Result<(), String> {
             base.join("ltc-mtc").join("config.json")
         }
     };
-    let listen = opt(args, "--listen").unwrap_or("0.0.0.0:8080").to_string();
+    let listen = opt(args, "--listen").unwrap_or("0.0.0.0:8088").to_string();
     let mut config = Config::load(&config_path)?;
     if !config_path.exists() {
         // "default" often has no capture under a system service (desktop sound servers run
@@ -206,7 +209,7 @@ fn devices() -> Result<(), String> {
     for d in audio::list_inputs() {
         println!("  {:<40} {}", d.name, d.desc);
     }
-    println!("\nMIDI outputs (ALSA sequencer):");
+    println!("\nMIDI outputs (ALSA sequencer; ltc-mtc's own ports are LTC-MTC:out and LTC-MTC:mtc):");
     let m = midi::Midi::open().map_err(|e| format!("ALSA sequencer: {e}"))?;
     for p in m.ports() {
         println!("  {:<8} {}", p.addr, p.name);

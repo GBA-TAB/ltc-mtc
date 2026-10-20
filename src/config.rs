@@ -13,10 +13,13 @@ pub struct Config {
     /// Input channel carrying LTC, 1-based.
     pub audio_channel: u32,
     pub sample_rate: u32,
-    /// Sequencer port name "Client:Port" (or "client:port"); empty = no connection
-    /// (other programs can still connect to LTC-MTC:out).
+    /// Default output for the event commands: sequencer port name "Client:Port" (or
+    /// "client:port"); empty = no connection (other programs can still connect to LTC-MTC:out).
     pub midi_output: String,
     pub mtc_enabled: bool,
+    /// Output for MIDI Time Code; empty = no connection (LTC-MTC:mtc can still be connected).
+    /// Missing in configs from before 0.2, which sent MTC to `midi_output`.
+    pub mtc_output: Option<String>,
     /// "auto", "24", "25", "29.97df" or "30".
     pub fps_mode: String,
     /// Frames the reader may miss and still treat playback as continuous (events
@@ -33,6 +36,7 @@ impl Default for Config {
             sample_rate: 48000,
             midi_output: String::new(),
             mtc_enabled: true,
+            mtc_output: None,
             fps_mode: "auto".into(),
             max_gap_frames: 4,
             events: Vec::new(),
@@ -63,17 +67,40 @@ fn yes() -> bool {
 pub enum Command {
     /// Control Change; channel 1..16, controller and value 0..127.
     #[serde(rename = "cc")]
-    ControlChange { channel: u8, controller: u8, value: u8 },
+    ControlChange {
+        channel: u8,
+        controller: u8,
+        value: u8,
+        /// Output port name; empty = the default output.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        output: String,
+    },
     /// Program Change; channel 1..16, program 0..127.
     #[serde(rename = "pc")]
-    ProgramChange { channel: u8, program: u8 },
+    ProgramChange {
+        channel: u8,
+        program: u8,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        output: String,
+    },
 }
 
 impl Command {
     pub fn describe(&self) -> String {
+        let (text, output) = match self {
+            Command::ControlChange { channel, controller, value, output } => (format!("CC ch{channel} #{controller}={value}"), output),
+            Command::ProgramChange { channel, program, output } => (format!("PC ch{channel} {program}"), output),
+        };
+        if output.is_empty() {
+            text
+        } else {
+            format!("{text} -> {output}")
+        }
+    }
+
+    pub fn output(&self) -> &str {
         match self {
-            Command::ControlChange { channel, controller, value } => format!("CC ch{channel} #{controller}={value}"),
-            Command::ProgramChange { channel, program } => format!("PC ch{channel} {program}"),
+            Command::ControlChange { output, .. } | Command::ProgramChange { output, .. } => output,
         }
     }
 }
@@ -121,6 +148,9 @@ impl Config {
             return Err(format!("unknown frame rate '{}'", self.fps_mode));
         }
         self.max_gap_frames = self.max_gap_frames.clamp(1, 30);
+        if self.mtc_output.is_none() {
+            self.mtc_output = Some(self.midi_output.clone());
+        }
         // Existing ids are kept; only missing or duplicate ones get a new one.
         let mut taken: HashSet<String> = self.events.iter().map(|e| e.id.clone()).collect();
         let mut seen = HashSet::new();
@@ -135,8 +165,8 @@ impl Config {
             e.time = tc.to_string();
             for c in &e.commands {
                 let (ch, a, b) = match *c {
-                    Command::ControlChange { channel, controller, value } => (channel, controller, value),
-                    Command::ProgramChange { channel, program } => (channel, program, 0),
+                    Command::ControlChange { channel, controller, value, .. } => (channel, controller, value),
+                    Command::ProgramChange { channel, program, .. } => (channel, program, 0),
                 };
                 if !(1..=16).contains(&ch) || a > 127 || b > 127 {
                     return Err(format!("event '{}': {} out of range (channel 1-16, values 0-127)", e.name, c.describe()));
@@ -175,5 +205,16 @@ mod tests {
         assert_eq!(ids[1], "e1");
         assert_eq!(c.events[1].time, "01:00:00:00");
         assert!(ids[0] != "e1" && ids[2] != "e1" && ids[0] != ids[2]);
+    }
+
+    #[test]
+    fn old_config_keeps_mtc_on_its_port() {
+        let mut c: Config = serde_json::from_str(r#"{"midi_output": "X:1", "events": [
+            {"time": "01:00:00:00", "commands": [{"type": "cc", "channel": 1, "controller": 2, "value": 3}]}]}"#).unwrap();
+        c.validate().unwrap();
+        assert_eq!(c.mtc_output.as_deref(), Some("X:1"));
+        assert_eq!(c.events[0].commands[0].output(), "");
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(!json.contains(r#""output""#), "empty outputs are not written");
     }
 }

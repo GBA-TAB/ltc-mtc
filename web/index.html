@@ -81,6 +81,8 @@ main { padding: 16px; display: grid; grid-template-columns: minmax(0, 1fr) 340px
 .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .check { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .hint { font-size: 12px; color: var(--dim); margin: 2px 0 0; }
+hr { border: 0; border-top: 1px solid var(--line); margin: 14px 0 12px; }
+.cmd select.out { width: 190px; max-width: 100%; }
 .err { color: var(--bad); font-size: 12px; }
 .log { font-family: var(--mono); font-size: 12px; max-height: 320px; overflow: auto; display: flex; flex-direction: column; gap: 4px; }
 .log div { border-bottom: 1px solid var(--line); padding-bottom: 4px; }
@@ -135,7 +137,7 @@ main { padding: 16px; display: grid; grid-template-columns: minmax(0, 1fr) 340px
 
   <aside class="side">
     <section class="card">
-      <h2>Input &amp; output</h2>
+      <h2>Audio input &amp; timecode</h2>
       <label class="field"><span>Audio input (ALSA)</span><select id="s-audio"></select></label>
       <div class="row2">
         <label class="field"><span>Channel</span><select id="s-chan"></select></label>
@@ -143,17 +145,24 @@ main { padding: 16px; display: grid; grid-template-columns: minmax(0, 1fr) 340px
           <option value="44100">44.1 kHz</option><option value="48000">48 kHz</option><option value="96000">96 kHz</option>
         </select></label>
       </div>
-      <label class="field"><span>MIDI output (ALSA sequencer)</span><select id="s-midi"></select></label>
-      <p class="hint">Other programs can also connect to <b>LTC-MTC:out</b> (aconnect).</p>
-      <div class="row2" style="margin-top:10px">
+      <div class="row2">
         <label class="field"><span>Frame rate</span><select id="s-fps">
           <option value="auto">Auto</option><option value="24">24</option><option value="25">25</option>
           <option value="29.97df">29.97 drop</option><option value="30">30</option>
         </select></label>
         <label class="field"><span>Gap tolerance (frames)</span><input id="s-gap" type="number" min="1" max="30"></label>
       </div>
-      <label class="check"><input id="s-mtc" type="checkbox"> Send MIDI Time Code</label>
       <button id="refresh" class="small">Refresh devices</button>
+    </section>
+    <section class="card">
+      <h2>MIDI outputs</h2>
+      <label class="field"><span>Commands: default output</span><select id="s-midi"></select></label>
+      <p class="hint">Each command can also pick its own output.</p>
+      <hr>
+      <label class="check"><input id="s-mtc" type="checkbox"> Send MIDI Time Code</label>
+      <label class="field"><span>MTC output</span><select id="s-mtcout"></select></label>
+      <p class="hint">Other programs can also connect to <b>LTC-MTC:out</b> (commands) and
+        <b>LTC-MTC:mtc</b> with aconnect.</p>
     </section>
     <section class="card">
       <h2>Fired</h2>
@@ -243,13 +252,9 @@ function renderSettings() {
   if (![...r.options].some((o) => o.value == cfg.sample_rate)) opt(r, cfg.sample_rate, cfg.sample_rate + " Hz");
   r.value = cfg.sample_rate;
 
-  const m = $("s-midi");
-  m.innerHTML = "";
-  opt(m, "", "— none (connect with aconnect) —");
-  const pn = new Set();
-  for (const p of devices.outputs) { pn.add(p.name); opt(m, p.name, `${p.name}  [${p.addr}]`); }
-  if (cfg.midi_output && !pn.has(cfg.midi_output)) opt(m, cfg.midi_output, `${cfg.midi_output} (not found)`);
-  m.value = cfg.midi_output;
+  fillPorts($("s-midi"), cfg.midi_output, "— none (aconnect LTC-MTC:out) —");
+  fillPorts($("s-mtcout"), cfg.mtc_output || "", "— none (aconnect LTC-MTC:mtc) —");
+  $("s-mtcout").disabled = !cfg.mtc_enabled;
 
   $("s-fps").value = cfg.fps_mode;
   $("s-gap").value = cfg.max_gap_frames;
@@ -261,7 +266,18 @@ $("s-rate").onchange = (e) => { cfg.sample_rate = +e.target.value; markDirty(); 
 $("s-midi").onchange = (e) => { cfg.midi_output = e.target.value; markDirty(); };
 $("s-fps").onchange = (e) => { cfg.fps_mode = e.target.value; markDirty(); renderEvents(); };
 $("s-gap").onchange = (e) => { cfg.max_gap_frames = Math.max(1, Math.min(30, +e.target.value || 4)); markDirty(); };
-$("s-mtc").onchange = (e) => { cfg.mtc_enabled = e.target.checked; markDirty(); };
+$("s-mtc").onchange = (e) => { cfg.mtc_enabled = e.target.checked; $("s-mtcout").disabled = !cfg.mtc_enabled; markDirty(); };
+$("s-mtcout").onchange = (e) => { cfg.mtc_output = e.target.value; markDirty(); };
+
+/** Fills a select with the MIDI ports; a configured port that is not there stays, marked. */
+function fillPorts(sel, value, noneLabel) {
+  sel.innerHTML = "";
+  opt(sel, "", noneLabel);
+  const names = new Set();
+  for (const p of devices.outputs) { names.add(p.name); opt(sel, p.name, `${p.name}  [${p.addr}]`); }
+  if (value && !names.has(value)) opt(sel, value, `${value} (not found)`);
+  sel.value = value;
+}
 $("refresh").onclick = loadDevices;
 
 async function loadDevices() {
@@ -307,7 +323,8 @@ function renderCmd(ev, c, idx) {
   type.value = c.type;
   type.onchange = () => {
     const ch = c.channel;
-    ev.commands[idx] = type.value === "cc" ? { type: "cc", channel: ch, controller: 0, value: 0 } : { type: "pc", channel: ch, program: 0 };
+    const output = c.output || "";
+    ev.commands[idx] = type.value === "cc" ? { type: "cc", channel: ch, controller: 0, value: 0, output } : { type: "pc", channel: ch, program: 0, output };
     markDirty(); renderEvents();
   };
   row.append(type, el("label", {}, "Ch", chSelect(c.channel, (v) => (c.channel = v))));
@@ -317,6 +334,10 @@ function renderCmd(ev, c, idx) {
   } else {
     row.append(el("label", {}, "Program", numInput(c.program, 0, 127, (v) => (c.program = v), "Program 0-127 (shown as 1-128 on many devices)")));
   }
+  const out = el("select", { class: "out", title: "MIDI output" });
+  fillPorts(out, c.output || "", "Default output");
+  out.onchange = () => { c.output = out.value; markDirty(); };
+  row.append(el("label", {}, "→", out));
   row.append(el("button", { class: "icon", title: "Remove command", onclick: () => { ev.commands.splice(idx, 1); markDirty(); renderEvents(); } }, "✕"));
   return row;
 }
@@ -359,11 +380,12 @@ function renderEvents() {
     if (!ev.commands.length) cmds.append(el("span", { class: "hint" }, "No commands."));
     card.append(cmds,
       el("div", { class: "cmd-add" },
-        el("button", { class: "small", onclick: () => { ev.commands.push({ type: "cc", channel: lastCh(ev), controller: 0, value: 127 }); markDirty(); renderEvents(); } }, "+ CC"),
-        el("button", { class: "small", onclick: () => { ev.commands.push({ type: "pc", channel: lastCh(ev), program: 0 }); markDirty(); renderEvents(); } }, "+ PC")));
+        el("button", { class: "small", onclick: () => { ev.commands.push({ type: "cc", channel: lastCh(ev), controller: 0, value: 127, output: lastOut(ev) }); markDirty(); renderEvents(); } }, "+ CC"),
+        el("button", { class: "small", onclick: () => { ev.commands.push({ type: "pc", channel: lastCh(ev), program: 0, output: lastOut(ev) }); markDirty(); renderEvents(); } }, "+ PC")));
     box.append(card);
   }
 }
+function lastOut(ev) { return ev.commands.length ? ev.commands[ev.commands.length - 1].output || "" : ""; }
 function lastCh(ev) { return ev.commands.length ? ev.commands[ev.commands.length - 1].channel : 1; }
 function sortEvents() { cfg.events.sort((a, b) => tcKey(a.time) - tcKey(b.time)); }
 
@@ -453,8 +475,9 @@ function renderStatus(s) {
   setBadge("b-fps", (s.fps || "--") + " fps" + (cfg && cfg.fps_mode !== "auto" ? " (fixed)" : ""), "");
   setBadge("b-dir", s.running ? (s.reverse ? "◀ reverse" : "▶ forward") : "–", s.running && s.reverse ? "warn" : "");
   setBadge("b-speed", s.running ? `speed ${(s.speed * 100).toFixed(1)} %` : "speed –", s.running && Math.abs(s.speed - 1) > 0.02 ? "warn" : "");
-  setBadge("b-midi", s.midi_port ? "MIDI → " + s.midi_port : s.midi_ok ? "MIDI: no port chosen" : "MIDI error", s.midi_port ? "ok" : s.midi_ok ? "" : "bad");
-  setBadge("b-mtc", saved && saved.mtc_enabled ? "MTC on" : "MTC off", saved && saved.mtc_enabled && s.running ? "ok" : "");
+  setBadge("b-midi", s.midi_port ? "Commands → " + s.midi_port : "Commands: no default output", !s.midi_ok ? "bad" : s.midi_port ? "ok" : "");
+  const mtcOn = saved && saved.mtc_enabled;
+  setBadge("b-mtc", !mtcOn ? "MTC off" : s.mtc_port ? "MTC → " + s.mtc_port : "MTC: no output", mtcOn && s.mtc_port && s.running ? "ok" : "");
   const db = s.level_db;
   $("meter").style.width = (100 - Math.max(0, Math.min(100, (db + 60) / 60 * 100))) + "%";
   $("db").textContent = db <= -119 ? "-inf dB" : db.toFixed(1) + " dB";

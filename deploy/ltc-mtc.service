@@ -4,7 +4,7 @@ After=sound.target network.target
 Wants=sound.target
 
 [Service]
-ExecStart=/usr/local/bin/ltc-mtc --config /var/lib/ltc-mtc/config.json --listen 0.0.0.0:8080
+ExecStart=/usr/local/bin/ltc-mtc --config /var/lib/ltc-mtc/config.json --listen 0.0.0.0:8088
 DynamicUser=yes
 StateDirectory=ltc-mtc
 SupplementaryGroups=audio

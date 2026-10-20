@@ -1,6 +1,6 @@
 [package]
 name = "ltc-mtc"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "SMPTE LTC reader: LTC -> MIDI Time Code, MIDI CC/PC events on timecode, web UI (ALSA, Raspberry Pi)"
 license = "MIT"

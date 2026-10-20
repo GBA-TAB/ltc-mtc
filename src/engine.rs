@@ -180,21 +180,31 @@ impl Engine {
                 }
             }
         }
-        let want = self.app.config.lock().unwrap().midi_output.clone();
+        let (out, mtc, mtc_on, mut used) = {
+            let c = self.app.config.lock().unwrap();
+            let used: Vec<String> = c.events.iter().flat_map(|e| e.commands.iter().map(|c| c.output().to_string())).collect();
+            (c.midi_output.clone(), c.mtc_output.clone().unwrap_or_default(), c.mtc_enabled, used)
+        };
         let m = self.midi.as_mut().unwrap();
-        let res = m.connect(if want.is_empty() { None } else { Some(&want) });
-        let mut s = self.app.status.lock().unwrap();
-        s.midi_port = m.connected().map(str::to_string);
-        match res {
-            Ok(()) => {
-                s.midi_ok = true;
-                s.midi_error = None;
-            }
-            Err(e) => {
-                s.midi_ok = false;
-                s.midi_error = Some(e);
-            }
+        m.refresh();
+        let mut errors = Vec::new();
+        if let Err(e) = m.connect_out(&out) {
+            errors.push(format!("commands: {e}"));
         }
+        // With MTC off, nothing is sent on the MTC port, and it is disconnected too.
+        if let Err(e) = m.connect_mtc(if mtc_on { &mtc } else { "" }) {
+            errors.push(format!("MTC: {e}"));
+        }
+        used.sort();
+        used.dedup();
+        for o in used.iter().filter(|o| !o.is_empty() && **o != out && !m.has_port(o)) {
+            errors.push(format!("event output '{o}' not found"));
+        }
+        let mut s = self.app.status.lock().unwrap();
+        s.midi_ok = errors.is_empty();
+        s.midi_port = m.out_connected().map(str::to_string);
+        s.mtc_port = m.mtc_connected().map(str::to_string);
+        s.midi_error = if errors.is_empty() { None } else { Some(errors.join("; ")) };
     }
 
     fn detect_fps(&mut self, f: &LtcFrame, rate: u32) {
@@ -335,9 +345,9 @@ impl Engine {
 
     fn send(&self, c: &Command) -> Result<(), String> {
         let m = self.midi.as_ref().ok_or("no ALSA sequencer")?;
-        match *c {
-            Command::ControlChange { channel, controller, value } => m.control_change(channel, controller, value),
-            Command::ProgramChange { channel, program } => m.program_change(channel, program),
+        match c {
+            Command::ControlChange { channel, controller, value, output } => m.control_change(output, *channel, *controller, *value),
+            Command::ProgramChange { channel, program, output } => m.program_change(output, *channel, *program),
         }
     }
 

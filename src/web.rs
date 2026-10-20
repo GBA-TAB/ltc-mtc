@@ -68,7 +68,7 @@ fn handle(app: &Arc<App>, mut req: Request) {
         }
         (Method::Get, "/api/devices") => {
             let inputs = crate::audio::list_inputs();
-            let outputs = crate::midi::Midi::open().map(|m| m.ports()).unwrap_or_default();
+            let outputs = crate::midi::Midi::open().map(|m| m.ports().to_vec()).unwrap_or_default();
             json(200, serde_json::json!({ "inputs": inputs, "outputs": outputs }).to_string())
         }
         (Method::Get, "/api/config") => {
