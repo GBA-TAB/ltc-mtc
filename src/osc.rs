@@ -7,10 +7,11 @@
 use crate::App;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr, ToSocketAddrs, UdpSocket};
+use std::io::{Read, Write};
+use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OscTarget {
@@ -18,7 +19,8 @@ pub struct OscTarget {
     /// Host name or IP address.
     pub host: String,
     pub port: u16,
-    /// "udp".
+    /// "udp", "tcp" (SLIP framing, OSC 1.1, e.g. QLab) or "tcp-len" (int32 length
+    /// prefix, OSC 1.0).
     #[serde(default = "udp")]
     pub protocol: String,
 }
@@ -27,7 +29,30 @@ fn udp() -> String {
     "udp".into()
 }
 
-pub const PROTOCOLS: [&str; 1] = ["udp"];
+pub const PROTOCOLS: [&str; 3] = ["udp", "tcp", "tcp-len"];
+
+/// A packet framed for a stream: SLIP with an END byte on both sides (OSC 1.1), or an
+/// int32 big-endian length prefix (OSC 1.0).
+pub fn frame(protocol: &str, packet: &[u8]) -> Vec<u8> {
+    const END: u8 = 0xC0;
+    const ESC: u8 = 0xDB;
+    if protocol == "tcp-len" {
+        let mut v = (packet.len() as u32).to_be_bytes().to_vec();
+        v.extend_from_slice(packet);
+        return v;
+    }
+    let mut v = Vec::with_capacity(packet.len() + 4);
+    v.push(END);
+    for &b in packet {
+        match b {
+            END => v.extend_from_slice(&[ESC, 0xDC]),
+            ESC => v.extend_from_slice(&[ESC, 0xDD]),
+            _ => v.push(b),
+        }
+    }
+    v.push(END);
+    v
+}
 
 /// An OSC argument; JSON {"type": "int", "value": 1}.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -148,6 +173,15 @@ struct Conn {
     target: OscTarget,
     sent: u64,
     send_error: Option<String>,
+    /// TCP: the connection thread and what it reports.
+    tcp: Option<(Sender<(Instant, Vec<u8>)>, Arc<Mutex<TcpState>>)>,
+}
+
+#[derive(Default)]
+struct TcpState {
+    connected: bool,
+    sent: u64,
+    error: Option<String>,
 }
 
 struct Worker {
@@ -167,7 +201,8 @@ fn run(app: Arc<App>, rx: Receiver<OscMsg>) {
     }
     let mut w = Worker { app, udp: None, conns: HashMap::new(), resolved, resolver: rtx };
     loop {
-        match rx.recv_timeout(Duration::from_secs(1)) {
+        // Short, so TCP link changes reach the interface quickly.
+        match rx.recv_timeout(Duration::from_millis(250)) {
             Ok(OscMsg::Targets(t)) => w.set_targets(t),
             Ok(OscMsg::Send { target, packet }) => w.send(&target, &packet),
             Err(RecvTimeoutError::Timeout) => {}
@@ -197,7 +232,20 @@ impl Worker {
         for t in &targets {
             let conn = match old.remove(&t.name) {
                 Some(c) if c.target == *t => c,
-                _ => Conn { target: t.clone(), sent: 0, send_error: None },
+                _ => {
+                    // Dropping the old Conn ends its TCP thread, which closes the connection.
+                    let tcp = (t.protocol != "udp").then(|| {
+                        let (tx, rx) = channel();
+                        let state = Arc::new(Mutex::new(TcpState::default()));
+                        let (tt, st, rs) = (t.clone(), state.clone(), self.resolved.clone());
+                        std::thread::Builder::new()
+                            .name(format!("osc-tcp-{}", t.name))
+                            .spawn(move || tcp_link(tt, rx, st, rs))
+                            .unwrap();
+                        (tx, state)
+                    });
+                    Conn { target: t.clone(), sent: 0, send_error: None, tcp }
+                }
             };
             self.conns.insert(t.name.clone(), conn);
         }
@@ -209,6 +257,10 @@ impl Worker {
             eprintln!("osc: unknown target '{target}'");
             return;
         };
+        if let Some((tx, _)) = &c.tcp {
+            let _ = tx.send((Instant::now(), frame(&c.target.protocol, packet)));
+            return;
+        }
         let addr = self.resolved.lock().unwrap().get(target).cloned();
         let res = match addr {
             None => Err(format!("{}: still looking up the name", c.target.host)),
@@ -243,6 +295,11 @@ impl Worker {
                     Some(Err(e)) => (None, Some(e.clone())),
                     None => (None, None),
                 };
+                if let Some((_, st)) = &c.tcp {
+                    let st = st.lock().unwrap();
+                    let error = st.error.clone().or(lookup_err).or_else(|| (!st.connected).then(|| "not connected".to_string()));
+                    return TargetStatus { name: c.target.name.clone(), addr, ok: error.is_none(), error, sent: st.sent };
+                }
                 let error = c.send_error.clone().or(lookup_err);
                 TargetStatus { name: c.target.name.clone(), addr, ok: error.is_none(), error, sent: c.sent }
             })
@@ -250,6 +307,97 @@ impl Worker {
         drop(r);
         list.sort_by(|a, b| a.name.cmp(&b.name));
         self.app.status.lock().unwrap().osc = list;
+    }
+}
+
+/// One TCP target: keeps a connection open (reconnecting every 2 s while the target is
+/// down), writes the framed packets, and discards what the target sends back. A packet more
+/// than a second old (the connection was down) is dropped rather than sent late.
+fn tcp_link(t: OscTarget, rx: Receiver<(Instant, Vec<u8>)>, state: Arc<Mutex<TcpState>>, resolved: Resolved) {
+    let mut stream: Option<TcpStream> = None;
+    let mut next_try = Instant::now();
+    let set = |connected: bool, error: Option<String>| {
+        let mut s = state.lock().unwrap();
+        s.connected = connected;
+        s.error = error;
+    };
+    let connect = |next_try: &mut Instant| -> Option<TcpStream> {
+        *next_try = Instant::now() + Duration::from_secs(2);
+        let addr = match resolved.lock().unwrap().get(&t.name).cloned() {
+            Some(Ok(a)) => a,
+            _ => return None, // the status shows the lookup error
+        };
+        match TcpStream::connect_timeout(&addr, Duration::from_millis(1000)) {
+            Ok(s) => {
+                let _ = s.set_nodelay(true);
+                let _ = s.set_write_timeout(Some(Duration::from_millis(500)));
+                eprintln!("osc {}: connected to {addr}", t.name);
+                set(true, None);
+                Some(s)
+            }
+            Err(e) => {
+                set(false, Some(format!("connect to {addr}: {e}")));
+                None
+            }
+        }
+    };
+    let mut junk = [0u8; 2048];
+    loop {
+        if stream.is_none() && Instant::now() >= next_try {
+            stream = connect(&mut next_try);
+        }
+        match rx.recv_timeout(Duration::from_millis(200)) {
+            Ok((at, bytes)) => {
+                if stream.is_none() {
+                    stream = connect(&mut next_try);
+                }
+                let Some(s) = stream.as_mut() else { continue };
+                if at.elapsed() > Duration::from_secs(1) {
+                    set(true, Some("a cue was dropped: more than 1 s late".into()));
+                    continue;
+                }
+                match s.write_all(&bytes) {
+                    Ok(()) => {
+                        let mut st = state.lock().unwrap();
+                        st.sent += 1;
+                        st.error = None;
+                    }
+                    Err(e) => {
+                        // Typically the target restarted: one new connection, one retry.
+                        stream = connect(&mut next_try);
+                        let retry = stream.as_mut().map(|s| s.write_all(&bytes));
+                        match retry {
+                            Some(Ok(())) => state.lock().unwrap().sent += 1,
+                            _ => {
+                                stream = None;
+                                set(false, Some(format!("send: {e}")));
+                            }
+                        }
+                    }
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return,
+        }
+        // Read what the target sent (replies), and notice when it closed the connection.
+        if let Some(s) = stream.as_mut() {
+            let _ = s.set_nonblocking(true);
+            let closed = loop {
+                match s.read(&mut junk) {
+                    Ok(0) => break true,
+                    Ok(_) => continue,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break false,
+                    Err(_) => break true,
+                }
+            };
+            let _ = s.set_nonblocking(false);
+            if closed {
+                eprintln!("osc {}: connection closed by the target", t.name);
+                stream = None;
+                set(false, Some("connection closed by the target".into()));
+                next_try = Instant::now() + Duration::from_millis(500);
+            }
+        }
     }
 }
 
@@ -286,6 +434,45 @@ mod tests {
         // Booleans have a type tag and no data; no arguments still send the "," tag.
         assert_eq!(encode("/go", &[OscArg::Bool(true), OscArg::Bool(false)]), b"/go\0,TF\0".to_vec());
         assert_eq!(encode("/go", &[]), b"/go\0,\0\0\0".to_vec());
+    }
+
+    #[test]
+    fn framing() {
+        assert_eq!(frame("tcp-len", b"/a\0\0"), vec![0, 0, 0, 4, b'/', b'a', 0, 0]);
+        assert_eq!(frame("tcp", &[1, 0xC0, 2, 0xDB, 3]), vec![0xC0, 1, 0xDB, 0xDC, 2, 0xDB, 0xDD, 3, 0xC0]);
+    }
+
+    /// A real TCP round trip through the connection thread, for both framings.
+    #[test]
+    fn tcp_link_sends() {
+        for proto in ["tcp", "tcp-len"] {
+            let srv = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = srv.local_addr().unwrap();
+            let t = OscTarget { name: "t".into(), host: "127.0.0.1".into(), port: addr.port(), protocol: proto.into() };
+            let resolved: Resolved = Arc::default();
+            resolved.lock().unwrap().insert("t".into(), Ok(addr));
+            let state = Arc::new(Mutex::new(TcpState::default()));
+            let (tx, rx) = channel();
+            let (st, rs, tt) = (state.clone(), resolved.clone(), t.clone());
+            let h = std::thread::spawn(move || tcp_link(tt, rx, st, rs));
+            let (mut conn, _) = srv.accept().unwrap();
+            let packet = encode("/cue/1/go", &[OscArg::Int(5)]);
+            tx.send((Instant::now(), frame(proto, &packet))).unwrap();
+            let want = frame(proto, &packet);
+            let mut got = vec![0u8; want.len()];
+            conn.read_exact(&mut got).unwrap();
+            assert_eq!(got, want, "{proto}");
+            // Replies are read and discarded without disturbing the link.
+            conn.write_all(b"reply").unwrap();
+            tx.send((Instant::now(), frame(proto, &packet))).unwrap();
+            conn.read_exact(&mut got).unwrap();
+            assert_eq!(got, want);
+            std::thread::sleep(Duration::from_millis(300));
+            assert!(state.lock().unwrap().connected);
+            assert_eq!(state.lock().unwrap().sent, 2);
+            drop(tx);
+            h.join().unwrap();
+        }
     }
 
     #[test]

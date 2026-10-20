@@ -424,7 +424,7 @@ function renderArg(c, a, i) {
 }
 
 /* ---------- OSC targets ---------- */
-const PROTOCOLS = [["udp", "UDP"]];
+const PROTOCOLS = [["udp", "UDP"], ["tcp", "TCP (SLIP, OSC 1.1)"], ["tcp-len", "TCP (length, OSC 1.0)"]];
 function renderTargets() {
   const box = $("osc-targets");
   box.innerHTML = "";

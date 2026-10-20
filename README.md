@@ -11,8 +11,12 @@ An SMPTE LTC reader for the Raspberry Pi (3 and later) and other Linux machines:
   Control Change (channel, controller, value) and Program Change (channel, program) commands.
   Each command goes to the default commands output or to an output of its own, so one event
   can drive several devices;
+- **sends OSC messages at given timecodes**, in the same events as the MIDI commands: an OSC
+  address with typed arguments, sent to a target from a list (QLab, a console, ...) over UDP
+  or TCP;
 - has a **web interface** to choose the audio input and channel, the MIDI outputs (ALSA
-  sequencer ports), the frame rate, and to edit, test, import and export the events.
+  sequencer ports), the OSC targets, the frame rate, and to edit, test, import and export
+  the events.
 
 ![screenshot](docs/screenshot.png)
 
@@ -55,11 +59,15 @@ To show the interface on a screen attached to the Pi, run
    off and choose its output, which may be another port. Press **Save**. The level meter
    and the `LTC locked` badge show that the signal arrives, and the badges show where the
    commands and the MTC go.
-3. **Events**: use **+ Event**, or **+ At current TC** while the timecode runs. Set the time
-   and add commands with **+ CC** and **+ PC**. Each command's **→** menu picks its output:
-   *Default output* or a specific port. **▶ Test** sends an event's commands immediately.
-   **Save** (or Ctrl+S) stores the list and makes it active.
-4. **Fired** lists what was sent, with the wall clock time and the timecode.
+3. **OSC targets** (if you use OSC): add each destination once with **+ Target**: a name,
+   the host (IP address or name), the port and the protocol. Each target shows its address and
+   the number of messages sent, or what is wrong.
+4. **Events**: use **+ Event**, or **+ At current TC** while the timecode runs. Set the time
+   and add commands with **+ CC**, **+ PC** and **+ OSC**. A MIDI command's **→** menu picks
+   its output: *Default output* or a specific port. An OSC command picks its target, has an
+   address (`/cue/12/go`) and any number of arguments (**+ arg**). **▶ Test** sends an
+   event's commands immediately. **Save** (or Ctrl+S) stores the list and makes it active.
+5. **Fired** lists what was sent, with the wall clock time and the timecode.
 
 Outputs are stored by port name ("Client:Port"), so a USB MIDI interface is found again
 after it is unplugged, plugged in elsewhere or renumbered. Missing outputs are shown in red at
@@ -67,6 +75,24 @@ the top of the page.
 
 Channels are 1 to 16. Controller, value and program numbers are 0 to 127. Many devices show
 programs as 1 to 128, so program 0 there is "1".
+
+### OSC
+
+| Protocol | Framing | For |
+|---|---|---|
+| UDP | one message per datagram | most devices and consoles |
+| TCP (SLIP, OSC 1.1) | SLIP, an END byte on both sides | QLab and other OSC 1.1 software |
+| TCP (length, OSC 1.0) | int32 length before each message | OSC 1.0 TCP receivers |
+
+Arguments are `int` (32 bit), `float` (32 bit), `string` and `bool` (sent as the types `T`
+and `F`). Every message is sent on its own; there are no bundles. Addresses start with `/`
+and have no spaces or pattern characters (`* ? , # [ ] { }`).
+
+Host names are looked up in the background at start, after every change and every 30
+seconds, so a slow or failing lookup never delays a cue. A TCP target is connected ahead of
+the first cue and reconnected every 2 seconds while it is down. If it restarts, the next cue
+opens a new connection. A cue that could not be sent within a second is dropped rather than
+sent late. Replies from the target are read and ignored.
 
 ### When events fire
 
@@ -115,27 +141,38 @@ An event in the config:
 ```
 
 A command without `output` uses `midi_output`, the default commands output. MTC uses
-`mtc_enabled` and `mtc_output`.
+`mtc_enabled` and `mtc_output`. OSC targets and an OSC command:
+
+```json
+"osc_targets": [ { "name": "QLab", "host": "192.168.1.20", "port": 53000, "protocol": "tcp" } ],
+...
+{ "type": "osc", "target": "QLab", "address": "/cue/12/go",
+  "args": [ { "type": "float", "value": 0.75 }, { "type": "string", "value": "on" } ] }
+```
 
 ## Testing without hardware
 
 `scripts/loopback-test.sh` loads `snd-aloop`, plays a generated LTC file into the loopback,
 runs ltc-mtc on it with Midi Through as the output, and shows what `aseqdump` received.
 `scripts/routing-test.sh` checks the routing: default commands, a command with its own
-output, and MTC on its own port, with MTC on and off.
+output, and MTC on its own port, with MTC on and off. `scripts/osc-test.sh [BINARY udp|tcp|tcp-len]`
+sends OSC to `scripts/osc-listen.py`. It covers all argument types, IP and named targets, a
+name that does not resolve, and the timing. `scripts/osc-reconnect-test.sh` stops and restarts
+a TCP target.
 `scripts/ui-demo.sh start|stop` keeps LTC running for a look at the web interface on port
 8088 (`LTC_DEMO_PORT` to change it).
 
 ## Status
 
-Version 0.2 (2026-10-20). Tested on a Raspberry Pi 5 (Raspberry Pi OS trixie, arm64) with
+Version 0.3 (2026-10-20). Tested on a Raspberry Pi 5 (Raspberry Pi OS trixie, arm64) with
 LTC played through `snd-aloop` at 24, 25, 29.97 drop-frame and 30 fps. The tests cover
 decoding, MTC (piece order, continuity, rate code), events on the exact frame, routing to
-separate outputs, MTC on and off, the systemd sandbox (real-time priority, saved settings),
+separate outputs, MTC on and off, OSC over UDP and both TCP framings (timing within a few
+milliseconds, a TCP target restarting), the systemd sandbox (real-time priority, saved settings),
 and the web interface.
 
-Not yet tested: a real Pi 3, LTC from a real source through a USB audio interface, and USB
-MIDI interfaces.
+Not yet tested: a real Pi 3, LTC from a real source through a USB audio interface, USB MIDI
+interfaces, and real OSC devices (QLab, consoles).
 
 ## Building
 
