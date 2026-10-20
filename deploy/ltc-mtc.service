@@ -1,0 +1,19 @@
+[Unit]
+Description=LTC reader -> MIDI Time Code and MIDI events on timecode
+After=sound.target network.target
+Wants=sound.target
+
+[Service]
+ExecStart=/usr/local/bin/ltc-mtc --config /var/lib/ltc-mtc/config.json --listen 0.0.0.0:8080
+DynamicUser=yes
+StateDirectory=ltc-mtc
+SupplementaryGroups=audio
+# Real-time priority for the audio and MIDI threads.
+AmbientCapabilities=CAP_SYS_NICE
+LimitRTPRIO=80
+LimitMEMLOCK=infinity
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

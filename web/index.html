@@ -1,0 +1,522 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LTC to MTC</title>
+<style>
+:root {
+  --bg: #0f1216; --panel: #171b21; --panel2: #1e232b; --line: #2b313b;
+  --text: #e6e9ee; --dim: #8a93a1; --accent: #4fa3ff; --ok: #3ccf7a; --warn: #f2b33d;
+  --bad: #ff5a5f; --fire: #ffcf4a; --input: #11151a;
+  --mono: ui-monospace, "SFMono-Regular", "DejaVu Sans Mono", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+header { display: flex; align-items: center; gap: 12px; padding: 10px 16px;
+  border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 5; }
+header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .02em; }
+header .spacer { flex: 1; }
+.dirty { color: var(--warn); font-size: 13px; display: none; }
+.dirty.on { display: inline; }
+button { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 6px;
+  padding: 6px 12px; font: inherit; cursor: pointer; white-space: nowrap; }
+button:hover { border-color: #3d4552; background: #252b35; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #04121f; font-weight: 600; }
+button.primary:disabled { opacity: .45; cursor: default; }
+button.small { padding: 3px 8px; font-size: 12px; }
+button.icon { padding: 3px 8px; color: var(--dim); }
+button.icon:hover { color: var(--bad); }
+input, select { background: var(--input); color: var(--text); border: 1px solid var(--line); border-radius: 5px;
+  padding: 5px 7px; font: inherit; min-width: 0; }
+input:focus, select:focus { outline: none; border-color: var(--accent); }
+input.bad { border-color: var(--bad); }
+input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); }
+main { padding: 16px; display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; max-width: 1400px; margin: 0 auto; }
+@media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); } }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+.card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); margin: 0 0 12px; font-weight: 600; }
+.hero { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 18px 28px; align-items: center; }
+.tc { font-family: var(--mono); font-size: clamp(40px, 9vw, 84px); font-weight: 600; letter-spacing: .02em;
+  font-variant-numeric: tabular-nums; line-height: 1; color: var(--text); }
+.tc.stopped { color: var(--dim); }
+.facts { display: flex; flex-direction: column; gap: 8px; min-width: 240px; flex: 1; }
+.badges { display: flex; flex-wrap: wrap; gap: 6px; }
+.badge { font-size: 12px; padding: 2px 8px; border-radius: 99px; background: var(--panel2); border: 1px solid var(--line); color: var(--dim); }
+.badge.ok { color: var(--ok); border-color: #2a5a3e; }
+.badge.warn { color: var(--warn); border-color: #5d4a22; }
+.badge.bad { color: var(--bad); border-color: #5e2a2c; }
+.meter { position: relative; height: 8px; border-radius: 4px; overflow: hidden; border: 1px solid var(--line);
+  background: linear-gradient(90deg, var(--ok) 0 75%, var(--warn) 75% 90%, var(--bad) 90%); }
+/* A cover over the unlit part keeps the colour scale fixed: green to -15 dB, amber to -6 dB. */
+.meter i { position: absolute; right: 0; top: 0; bottom: 0; background: var(--input); width: 100%; transition: width .08s linear; }
+.meterrow { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--dim); }
+.meterrow .meter { flex: 1; }
+.next { font-size: 13px; color: var(--dim); }
+.next b { color: var(--text); font-weight: 600; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.toolbar .spacer { flex: 1; }
+.events { display: flex; flex-direction: column; gap: 8px; }
+.ev { border: 1px solid var(--line); border-radius: 8px; background: var(--panel2); padding: 8px 10px; transition: border-color .2s, box-shadow .2s; }
+.ev.disabled { opacity: .55; }
+.ev.next { border-color: var(--accent); }
+.ev.passed .ev-time { color: var(--dim); }
+.ev.flash { border-color: var(--fire); box-shadow: 0 0 0 2px rgba(255, 207, 74, .35); }
+.ev-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.ev-time { font-family: var(--mono); width: 120px; font-size: 15px; font-variant-numeric: tabular-nums; }
+.ev-name { flex: 1; min-width: 120px; }
+.cmds { margin: 8px 0 2px 24px; display: flex; flex-direction: column; gap: 5px; }
+.cmd { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+.cmd label { color: var(--dim); font-size: 12px; display: inline-flex; align-items: center; gap: 5px; }
+.cmd select.type { width: 140px; }
+.cmd input.num { width: 64px; }
+.cmd select.ch { width: 64px; }
+.cmd-add { display: flex; gap: 6px; margin: 4px 0 0 24px; }
+.empty { color: var(--dim); text-align: center; padding: 28px 8px; border: 1px dashed var(--line); border-radius: 8px; }
+.side { display: flex; flex-direction: column; gap: 16px; }
+.field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.field > span { font-size: 12px; color: var(--dim); }
+.field select, .field input:not([type=checkbox]) { width: 100%; }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.check { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.hint { font-size: 12px; color: var(--dim); margin: 2px 0 0; }
+.err { color: var(--bad); font-size: 12px; }
+.log { font-family: var(--mono); font-size: 12px; max-height: 320px; overflow: auto; display: flex; flex-direction: column; gap: 4px; }
+.log div { border-bottom: 1px solid var(--line); padding-bottom: 4px; }
+.log .t { color: var(--dim); }
+.log .e { color: var(--bad); }
+#toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--panel2); border: 1px solid var(--line);
+  padding: 8px 14px; border-radius: 8px; display: none; z-index: 10; max-width: calc(100% - 32px); }
+#toast.on { display: block; }
+#toast.bad { border-color: var(--bad); color: var(--bad); }
+</style>
+</head>
+<body>
+<header>
+  <h1>LTC &rarr; MTC</h1>
+  <span id="conn" class="badge">connecting</span>
+  <span class="spacer"></span>
+  <span id="dirty" class="dirty">unsaved changes</span>
+  <button id="revert" class="small" title="Reload the saved configuration">Revert</button>
+  <button id="save" class="primary" disabled title="Ctrl+S">Save</button>
+</header>
+
+<main>
+  <section class="card hero">
+    <div id="tc" class="tc stopped">--:--:--:--</div>
+    <div class="facts">
+      <div class="badges">
+        <span id="b-state" class="badge">no signal</span>
+        <span id="b-fps" class="badge">-- fps</span>
+        <span id="b-dir" class="badge">&ndash;</span>
+        <span id="b-speed" class="badge">speed &ndash;</span>
+        <span id="b-midi" class="badge">MIDI &ndash;</span>
+        <span id="b-mtc" class="badge">MTC</span>
+      </div>
+      <div class="meterrow"><span>LTC in</span><div class="meter"><i id="meter"></i></div><span id="db">-inf dB</span></div>
+      <div id="next" class="next">&nbsp;</div>
+      <div id="alerts" class="err"></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Events</h2>
+    <div class="toolbar">
+      <button id="add">+ Event</button>
+      <button id="addnow" title="New event at the current timecode">+ At current TC</button>
+      <span class="spacer"></span>
+      <button id="export" class="small">Export</button>
+      <button id="import" class="small">Import</button>
+      <input id="importfile" type="file" accept="application/json,.json" hidden>
+    </div>
+    <div id="events" class="events"></div>
+  </section>
+
+  <aside class="side">
+    <section class="card">
+      <h2>Input &amp; output</h2>
+      <label class="field"><span>Audio input (ALSA)</span><select id="s-audio"></select></label>
+      <div class="row2">
+        <label class="field"><span>Channel</span><select id="s-chan"></select></label>
+        <label class="field"><span>Sample rate</span><select id="s-rate">
+          <option value="44100">44.1 kHz</option><option value="48000">48 kHz</option><option value="96000">96 kHz</option>
+        </select></label>
+      </div>
+      <label class="field"><span>MIDI output (ALSA sequencer)</span><select id="s-midi"></select></label>
+      <p class="hint">Other programs can also connect to <b>LTC-MTC:out</b> (aconnect).</p>
+      <div class="row2" style="margin-top:10px">
+        <label class="field"><span>Frame rate</span><select id="s-fps">
+          <option value="auto">Auto</option><option value="24">24</option><option value="25">25</option>
+          <option value="29.97df">29.97 drop</option><option value="30">30</option>
+        </select></label>
+        <label class="field"><span>Gap tolerance (frames)</span><input id="s-gap" type="number" min="1" max="30"></label>
+      </div>
+      <label class="check"><input id="s-mtc" type="checkbox"> Send MIDI Time Code</label>
+      <button id="refresh" class="small">Refresh devices</button>
+    </section>
+    <section class="card">
+      <h2>Fired</h2>
+      <div id="log" class="log"><span class="t">nothing yet</span></div>
+    </section>
+  </aside>
+</main>
+<div id="toast"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+let saved = null;      // config as on the server
+let cfg = null;        // config being edited
+let devices = { inputs: [], outputs: [] };
+let status = null;
+let lastFiredSeq = null;
+let idCounter = 0;
+
+const TC_RE = /^(\d{1,2})[:;.](\d{1,2})[:;.](\d{1,2})[:;.](\d{1,2})$/;
+const pad = (n) => String(n).padStart(2, "0");
+
+function normTc(s) {
+  s = s.trim();
+  if (/^\d{8}$/.test(s)) s = s.replace(/(\d\d)(\d\d)(\d\d)(\d\d)/, "$1:$2:$3:$4");
+  const m = TC_RE.exec(s);
+  if (!m) return null;
+  const [h, mi, se, f] = m.slice(1).map(Number);
+  if (h > 23 || mi > 59 || se > 59 || f > maxFrame()) return null;
+  return `${pad(h)}:${pad(mi)}:${pad(se)}:${pad(f)}`;
+}
+function maxFrame() {
+  const mode = cfg ? cfg.fps_mode : "auto";
+  if (mode === "24") return 23;
+  if (mode === "25") return 24;
+  return 29;
+}
+const tcKey = (s) => s.split(/[:;.]/).map(Number).reduce((a, v, i) => a + v * [216000, 3600, 60, 1][i], 0);
+
+function newId() { return "n" + Date.now().toString(36) + (idCounter++); }
+
+async function api(method, path, body) {
+  const r = await fetch(path, { method, headers: body ? { "Content-Type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+
+function toast(msg, bad) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = "on" + (bad ? " bad" : "");
+  clearTimeout(toast.h);
+  toast.h = setTimeout(() => (t.className = ""), bad ? 6000 : 2200);
+}
+
+function isDirty() { return saved && JSON.stringify(saved) !== JSON.stringify(cfg); }
+function markDirty() {
+  const d = isDirty();
+  $("dirty").classList.toggle("on", !!d);
+  $("save").disabled = !d;
+}
+
+/* ---------- settings ---------- */
+function opt(sel, value, label) {
+  const o = document.createElement("option");
+  o.value = value; o.textContent = label;
+  sel.appendChild(o);
+}
+function renderSettings() {
+  const a = $("s-audio");
+  a.innerHTML = "";
+  const names = new Set();
+  for (const d of devices.inputs) {
+    names.add(d.name);
+    opt(a, d.name, d.desc ? `${d.name} — ${d.desc}` : d.name);
+  }
+  if (!names.has(cfg.audio_device)) opt(a, cfg.audio_device, `${cfg.audio_device} (not found)`);
+  a.value = cfg.audio_device;
+
+  const c = $("s-chan");
+  c.innerHTML = "";
+  for (let i = 1; i <= Math.max(8, cfg.audio_channel); i++) opt(c, i, i === 1 ? "1 (left)" : i === 2 ? "2 (right)" : String(i));
+  c.value = cfg.audio_channel;
+
+  const r = $("s-rate");
+  if (![...r.options].some((o) => o.value == cfg.sample_rate)) opt(r, cfg.sample_rate, cfg.sample_rate + " Hz");
+  r.value = cfg.sample_rate;
+
+  const m = $("s-midi");
+  m.innerHTML = "";
+  opt(m, "", "— none (connect with aconnect) —");
+  const pn = new Set();
+  for (const p of devices.outputs) { pn.add(p.name); opt(m, p.name, `${p.name}  [${p.addr}]`); }
+  if (cfg.midi_output && !pn.has(cfg.midi_output)) opt(m, cfg.midi_output, `${cfg.midi_output} (not found)`);
+  m.value = cfg.midi_output;
+
+  $("s-fps").value = cfg.fps_mode;
+  $("s-gap").value = cfg.max_gap_frames;
+  $("s-mtc").checked = cfg.mtc_enabled;
+}
+$("s-audio").onchange = (e) => { cfg.audio_device = e.target.value; markDirty(); };
+$("s-chan").onchange = (e) => { cfg.audio_channel = +e.target.value; markDirty(); };
+$("s-rate").onchange = (e) => { cfg.sample_rate = +e.target.value; markDirty(); };
+$("s-midi").onchange = (e) => { cfg.midi_output = e.target.value; markDirty(); };
+$("s-fps").onchange = (e) => { cfg.fps_mode = e.target.value; markDirty(); renderEvents(); };
+$("s-gap").onchange = (e) => { cfg.max_gap_frames = Math.max(1, Math.min(30, +e.target.value || 4)); markDirty(); };
+$("s-mtc").onchange = (e) => { cfg.mtc_enabled = e.target.checked; markDirty(); };
+$("refresh").onclick = loadDevices;
+
+async function loadDevices() {
+  try { devices = await api("GET", "/api/devices"); } catch (e) { toast("devices: " + e.message, true); }
+  if (cfg) renderSettings();
+}
+
+/* ---------- events ---------- */
+function el(tag, props = {}, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === "class") e.className = v;
+    else if (k.startsWith("on")) e[k] = v;
+    else if (k in e) e[k] = v;
+    else e.setAttribute(k, v);
+  }
+  for (const k of kids) if (k != null) e.append(k);
+  return e;
+}
+function numInput(value, min, max, onset, title) {
+  const i = el("input", { type: "number", class: "num", min, max, value, title });
+  i.oninput = () => {
+    const v = Number(i.value);
+    const ok = i.value !== "" && Number.isInteger(v) && v >= min && v <= max;
+    i.classList.toggle("bad", !ok);
+    if (ok) { onset(v); markDirty(); }
+  };
+  return i;
+}
+function chSelect(value, onset) {
+  const s = el("select", { class: "ch", title: "MIDI channel" });
+  for (let i = 1; i <= 16; i++) opt(s, i, i);
+  s.value = value;
+  s.onchange = () => { onset(+s.value); markDirty(); };
+  return s;
+}
+
+function renderCmd(ev, c, idx) {
+  const row = el("div", { class: "cmd" });
+  const type = el("select", { class: "type" });
+  opt(type, "cc", "Control Change");
+  opt(type, "pc", "Program Change");
+  type.value = c.type;
+  type.onchange = () => {
+    const ch = c.channel;
+    ev.commands[idx] = type.value === "cc" ? { type: "cc", channel: ch, controller: 0, value: 0 } : { type: "pc", channel: ch, program: 0 };
+    markDirty(); renderEvents();
+  };
+  row.append(type, el("label", {}, "Ch", chSelect(c.channel, (v) => (c.channel = v))));
+  if (c.type === "cc") {
+    row.append(el("label", {}, "CC#", numInput(c.controller, 0, 127, (v) => (c.controller = v), "Controller number 0-127")),
+      el("label", {}, "Value", numInput(c.value, 0, 127, (v) => (c.value = v), "Value 0-127")));
+  } else {
+    row.append(el("label", {}, "Program", numInput(c.program, 0, 127, (v) => (c.program = v), "Program 0-127 (shown as 1-128 on many devices)")));
+  }
+  row.append(el("button", { class: "icon", title: "Remove command", onclick: () => { ev.commands.splice(idx, 1); markDirty(); renderEvents(); } }, "✕"));
+  return row;
+}
+
+function renderEvents() {
+  const box = $("events");
+  box.innerHTML = "";
+  if (!cfg.events.length) {
+    box.append(el("div", { class: "empty" }, "No events yet. Add one, or use “+ At current TC” while the timecode runs."));
+    return;
+  }
+  const curKey = status && status.tc && TC_RE.test(status.tc) ? tcKey(status.tc) : null;
+  const nextId = status && status.next_event ? status.next_event.id : null;
+  for (const ev of cfg.events) {
+    const time = el("input", { class: "ev-time", value: ev.time, title: "HH:MM:SS:FF", spellcheck: false, inputMode: "numeric" });
+    time.oninput = () => {
+      const n = normTc(time.value);
+      time.classList.toggle("bad", !n);
+      if (n) { ev.time = n; markDirty(); }
+    };
+    time.onchange = () => {
+      const n = normTc(time.value);
+      if (n) { time.value = n; ev.time = n; sortEvents(); markDirty(); renderEvents(); }
+    };
+    const name = el("input", { class: "ev-name", value: ev.name, placeholder: "Name (optional)" });
+    name.oninput = () => { ev.name = name.value; markDirty(); };
+    const en = el("input", { type: "checkbox", checked: ev.enabled, title: "Enabled" });
+    en.onchange = () => { ev.enabled = en.checked; markDirty(); renderEvents(); };
+    const cls = ["ev"];
+    if (!ev.enabled) cls.push("disabled");
+    if (ev.id === nextId) cls.push("next");
+    if (curKey != null && tcKey(ev.time) <= curKey) cls.push("passed");
+    const card = el("div", { class: cls.join(" "), "data-id": ev.id },
+      el("div", { class: "ev-head" }, en, time, name,
+        el("button", { class: "small", title: "Send this event's commands now", onclick: () => testEvent(ev) }, "▶ Test"),
+        el("button", { class: "small", title: "Duplicate", onclick: () => dupEvent(ev) }, "Duplicate"),
+        el("button", { class: "icon", title: "Delete event", onclick: () => { cfg.events = cfg.events.filter((e) => e !== ev); markDirty(); renderEvents(); } }, "✕")));
+    const cmds = el("div", { class: "cmds" });
+    ev.commands.forEach((c, i) => cmds.append(renderCmd(ev, c, i)));
+    if (!ev.commands.length) cmds.append(el("span", { class: "hint" }, "No commands."));
+    card.append(cmds,
+      el("div", { class: "cmd-add" },
+        el("button", { class: "small", onclick: () => { ev.commands.push({ type: "cc", channel: lastCh(ev), controller: 0, value: 127 }); markDirty(); renderEvents(); } }, "+ CC"),
+        el("button", { class: "small", onclick: () => { ev.commands.push({ type: "pc", channel: lastCh(ev), program: 0 }); markDirty(); renderEvents(); } }, "+ PC")));
+    box.append(card);
+  }
+}
+function lastCh(ev) { return ev.commands.length ? ev.commands[ev.commands.length - 1].channel : 1; }
+function sortEvents() { cfg.events.sort((a, b) => tcKey(a.time) - tcKey(b.time)); }
+
+function addEvent(time) {
+  cfg.events.push({ id: newId(), name: "", time, enabled: true, commands: [{ type: "pc", channel: 1, program: 0 }] });
+  sortEvents(); markDirty(); renderEvents();
+}
+function dupEvent(ev) {
+  const c = JSON.parse(JSON.stringify(ev));
+  c.id = newId(); c.name = ev.name ? ev.name + " copy" : "";
+  cfg.events.push(c); sortEvents(); markDirty(); renderEvents();
+}
+async function testEvent(ev) {
+  try { await api("POST", "/api/fire", { commands: ev.commands }); toast("Sent: " + (ev.name || ev.time)); }
+  catch (e) { toast(e.message, true); }
+}
+$("add").onclick = () => {
+  const last = cfg.events.length ? cfg.events[cfg.events.length - 1].time : "01:00:00:00";
+  addEvent(last);
+};
+$("addnow").onclick = () => {
+  const t = status && TC_RE.test(status.tc) ? normTc(status.tc.replace(";", ":")) : null;
+  if (!t) return toast("No timecode yet", true);
+  addEvent(t);
+};
+
+/* ---------- save / load ---------- */
+async function loadConfig() {
+  saved = await api("GET", "/api/config");
+  cfg = JSON.parse(JSON.stringify(saved));
+  renderSettings(); renderEvents(); markDirty();
+}
+async function save() {
+  for (const ev of cfg.events) if (!normTc(ev.time)) return toast(`Bad time ${ev.time}`, true);
+  try {
+    saved = await api("PUT", "/api/config", cfg);
+    cfg = JSON.parse(JSON.stringify(saved));
+    renderSettings(); renderEvents(); markDirty();
+    toast("Saved");
+  } catch (e) { toast("Not saved: " + e.message, true); }
+}
+$("save").onclick = save;
+$("revert").onclick = () => { if (!isDirty() || confirm("Discard unsaved changes?")) loadConfig(); };
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); if (isDirty()) save(); }
+});
+window.addEventListener("beforeunload", (e) => { if (isDirty()) { e.preventDefault(); e.returnValue = ""; } });
+
+$("export").onclick = () => {
+  const blob = new Blob([JSON.stringify({ events: cfg.events }, null, 2)], { type: "application/json" });
+  const a = el("a", { href: URL.createObjectURL(blob), download: "ltc-mtc-events.json" });
+  document.body.append(a); a.click(); a.remove();
+};
+$("import").onclick = () => $("importfile").click();
+$("importfile").onchange = async (e) => {
+  const f = e.target.files[0];
+  e.target.value = "";
+  if (!f) return;
+  try {
+    const j = JSON.parse(await f.text());
+    const evs = Array.isArray(j) ? j : j.events;
+    if (!Array.isArray(evs)) throw new Error("no events in file");
+    const replace = confirm(`Import ${evs.length} events.\nOK = replace the current list, Cancel = add to it.`);
+    const clean = evs.map((v) => ({ id: newId(), name: String(v.name || ""), time: normTc(String(v.time || "")) || "00:00:00:00",
+      enabled: v.enabled !== false, commands: Array.isArray(v.commands) ? v.commands : [] }));
+    cfg.events = replace ? clean : cfg.events.concat(clean);
+    sortEvents(); markDirty(); renderEvents();
+    toast("Imported — press Save to keep");
+  } catch (err) { toast("Import: " + err.message, true); }
+};
+
+/* ---------- live status ---------- */
+function setBadge(id, text, kind) {
+  const b = $(id);
+  b.textContent = text;
+  b.className = "badge" + (kind ? " " + kind : "");
+}
+function renderStatus(s) {
+  const tc = $("tc");
+  tc.textContent = s.tc;
+  tc.classList.toggle("stopped", !s.running);
+  const sig = s.level_db > -50;
+  if (!s.audio_ok) setBadge("b-state", "audio error", "bad");
+  else if (s.running) setBadge("b-state", "LTC locked", "ok");
+  else if (sig) setBadge("b-state", s.frames_decoded ? "stopped" : "signal, no LTC", "warn");
+  else setBadge("b-state", "no signal", "");
+  setBadge("b-fps", (s.fps || "--") + " fps" + (cfg && cfg.fps_mode !== "auto" ? " (fixed)" : ""), "");
+  setBadge("b-dir", s.running ? (s.reverse ? "◀ reverse" : "▶ forward") : "–", s.running && s.reverse ? "warn" : "");
+  setBadge("b-speed", s.running ? `speed ${(s.speed * 100).toFixed(1)} %` : "speed –", s.running && Math.abs(s.speed - 1) > 0.02 ? "warn" : "");
+  setBadge("b-midi", s.midi_port ? "MIDI → " + s.midi_port : s.midi_ok ? "MIDI: no port chosen" : "MIDI error", s.midi_port ? "ok" : s.midi_ok ? "" : "bad");
+  setBadge("b-mtc", saved && saved.mtc_enabled ? "MTC on" : "MTC off", saved && saved.mtc_enabled && s.running ? "ok" : "");
+  const db = s.level_db;
+  $("meter").style.width = (100 - Math.max(0, Math.min(100, (db + 60) / 60 * 100))) + "%";
+  $("db").textContent = db <= -119 ? "-inf dB" : db.toFixed(1) + " dB";
+  const n = s.next_event;
+  $("next").innerHTML = n ? `Next: <b>${esc(n.name || "event")}</b> at <b>${n.time}</b> in ${fmtSec(n.seconds)}` : "&nbsp;";
+  const alerts = [s.audio_error, s.midi_error].filter(Boolean);
+  $("alerts").textContent = alerts.join(" · ");
+
+  if (lastFiredSeq !== null && s.fired_seq !== lastFiredSeq && s.last_fired) flash(s.last_fired);
+  if (s.fired_seq !== lastFiredSeq) renderLog(s.log);
+  lastFiredSeq = s.fired_seq;
+
+  // Next/passed highlighting without rebuilding the editor.
+  const curKey = TC_RE.test(s.tc) ? tcKey(s.tc) : null;
+  for (const card of document.querySelectorAll(".ev")) {
+    const ev = cfg && cfg.events.find((e) => e.id === card.dataset.id);
+    if (!ev) continue;
+    card.classList.toggle("next", !!n && n.id === ev.id);
+    card.classList.toggle("passed", curKey != null && TC_RE.test(ev.time) && tcKey(ev.time) <= curKey);
+  }
+}
+function flash(id) {
+  const card = document.querySelector(`.ev[data-id="${CSS.escape(id)}"]`);
+  if (!card) return;
+  card.classList.add("flash");
+  setTimeout(() => card.classList.remove("flash"), 700);
+}
+function renderLog(log) {
+  const box = $("log");
+  box.innerHTML = "";
+  if (!log.length) { box.append(el("span", { class: "t" }, "nothing yet")); return; }
+  for (const l of log) {
+    box.append(el("div", {}, el("span", { class: "t" }, l.wall + "  "), l.tc + "  " + (l.name || "event"),
+      el("br"), el("span", { class: "t" }, l.commands || "(no commands)"),
+      l.error ? el("div", { class: "e" }, l.error) : null));
+  }
+}
+const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+function fmtSec(s) {
+  if (s < 60) return s.toFixed(1) + " s";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} min ${Math.floor(s % 60)} s`;
+  return `${Math.floor(m / 60)} h ${m % 60} min`;
+}
+
+async function poll() {
+  try {
+    const r = await fetch("/api/status", { cache: "no-store" });
+    status = await r.json();
+    renderStatus(status);
+    setBadge("conn", "connected", "ok");
+  } catch (e) {
+    setBadge("conn", "offline", "bad");
+  }
+  setTimeout(poll, 100);
+}
+
+(async function init() {
+  try { await loadConfig(); } catch (e) { toast("config: " + e.message, true); }
+  await loadDevices();
+  poll();
+})();
+</script>
+</body>
+</html>
