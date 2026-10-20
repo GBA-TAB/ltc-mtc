@@ -8,9 +8,12 @@ start)
   nohup ./target/release/ltc-mtc --config "$DIR/config.json" --listen 0.0.0.0:8091 > "$DIR/demo.log" 2>&1 &
   echo $! > "$DIR/demo.pids"
   sleep 1
-  nohup aplay -q -D plughw:CARD=Loopback,DEV=0 "$DIR/loop.wav" >/dev/null 2>&1 &
+  # Plays the 10-minute file over and over (00:59:52:00 to 01:09:52:00).
+  nohup bash -c "while aplay -q -D plughw:CARD=Loopback,DEV=0 '$DIR/loop.wav'; do :; done" >/dev/null 2>&1 &
   echo $! >> "$DIR/demo.pids"
   cat "$DIR/demo.pids";;
 stop)
-  kill $(cat "$DIR/demo.pids"); rm -f "$DIR/demo.pids";;
+  # The player loop first, then its current aplay (by its parent's PID), then ltc-mtc.
+  LOOP=$(sed -n 2p "$DIR/demo.pids")
+  kill $LOOP; pkill -P $LOOP aplay 2>/dev/null; kill $(head -1 "$DIR/demo.pids"); rm -f "$DIR/demo.pids";;
 esac
