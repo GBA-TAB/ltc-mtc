@@ -14,7 +14,10 @@ start)
   echo $! >> "$DIR/demo.pids"
   cat "$DIR/demo.pids";;
 stop)
-  # The player loop first, then its current aplay (by its parent's PID), then ltc-mtc.
+  # Note the loop's aplay before stopping the loop (afterwards it has another parent), stop
+  # the loop (bash acts on the signal once aplay ends), then aplay, then ltc-mtc.
   LOOP=$(sed -n 2p "$DIR/demo.pids")
-  kill $LOOP; pkill -P $LOOP aplay 2>/dev/null; kill $(head -1 "$DIR/demo.pids"); rm -f "$DIR/demo.pids";;
+  PLAYER=$(pgrep -P "$LOOP")
+  kill "$LOOP"; [ -n "$PLAYER" ] && kill $PLAYER
+  kill "$(head -1 "$DIR/demo.pids")"; rm -f "$DIR/demo.pids";;
 esac

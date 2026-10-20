@@ -126,6 +126,17 @@ output, and MTC on its own port, with MTC on and off.
 `scripts/ui-demo.sh start|stop` keeps LTC running for a look at the web interface on port
 8088 (`LTC_DEMO_PORT` to change it).
 
+## Status
+
+Version 0.2 (2026-10-20). Tested on a Raspberry Pi 5 (Raspberry Pi OS trixie, arm64) with
+LTC played through `snd-aloop` at 24, 25, 29.97 drop-frame and 30 fps. The tests cover
+decoding, MTC (piece order, continuity, rate code), events on the exact frame, routing to
+separate outputs, MTC on and off, the systemd sandbox (real-time priority, saved settings),
+and the web interface.
+
+Not yet tested: a real Pi 3, LTC from a real source through a USB audio interface, and USB
+MIDI interfaces.
+
 ## Building
 
 ```sh
