@@ -8,6 +8,7 @@ mod ltc;
 mod midi;
 mod mtc;
 mod osc;
+mod shows;
 mod tc;
 mod web;
 
@@ -15,7 +16,7 @@ use config::{Command, Config};
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -51,6 +52,9 @@ pub struct LogEntry {
 #[derive(Clone, Debug, Serialize, Default)]
 pub struct Status {
     pub tc: String,
+    /// Filled in by the web server from App.
+    pub armed: bool,
+    pub show: Option<String>,
     pub running: bool,
     pub reverse: bool,
     pub fps: String,
@@ -83,6 +87,10 @@ pub struct App {
     /// Bumped when the audio input settings change; the capture thread reopens.
     pub audio_gen: AtomicU64,
     pub engine_tx: Mutex<Sender<EngineMsg>>,
+    /// Cues fire when true (the Start/Stop switch); kept in state.json.
+    pub armed: AtomicBool,
+    /// The current show (Save writes to it); kept in state.json.
+    pub show: Mutex<Option<String>>,
 }
 
 impl App {
@@ -188,6 +196,8 @@ fn serve(args: &[String]) -> Result<(), String> {
         }
     }
     eprintln!("config: {} ({} events)", config_path.display(), config.events.len());
+    let state = shows::load_state(&config_path);
+    eprintln!("show: {}, cues {}", state.show.as_deref().unwrap_or("(none)"), if state.armed { "active" } else { "stopped" });
     let (tx, rx) = channel();
     let app = Arc::new(App {
         config: Mutex::new(config),
@@ -195,6 +205,8 @@ fn serve(args: &[String]) -> Result<(), String> {
         status: Mutex::new(Status { tc: "--:--:--:--".into(), level_db: -120.0, ..Default::default() }),
         audio_gen: AtomicU64::new(0),
         engine_tx: Mutex::new(tx),
+        armed: AtomicBool::new(state.armed),
+        show: Mutex::new(state.show),
     });
     {
         let a = app.clone();

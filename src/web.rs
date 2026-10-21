@@ -3,11 +3,18 @@
 //! GET  /api/status   live timecode, levels, connections, fired events
 //! GET  /api/devices  audio inputs and MIDI outputs
 //! GET  /api/config   settings and events
-//! PUT  /api/config   replace settings and events (validated, saved to disk)
+//! PUT  /api/config   replace settings and events (validated, saved to disk, active at once)
 //! POST /api/fire     {"id": ...} fires a saved event, or {"commands": [...]} sends them
+//! POST /api/armed    {"armed": bool} starts or stops the cues
+//! GET  /api/shows    {"current": name, "shows": [{name, modified, events}]}
+//! POST /api/shows/save    {"name"?, "overwrite"?} saves the active config (to the current show)
+//! POST /api/shows/load    {"name"} makes a show the active config
+//! POST /api/shows/delete  {"name"}
+//! POST /api/shows/get     {"name"} the show file (download)
+//! POST /api/shows/upload  {"name", "config", "overwrite"?} stores a show file
 
 use crate::config::{Command, Config};
-use crate::{App, EngineMsg};
+use crate::{shows, App, EngineMsg};
 use serde::Deserialize;
 use std::io::Read;
 use std::sync::atomic::Ordering;
@@ -50,6 +57,34 @@ fn error(code: u16, msg: &str) -> Response<std::io::Cursor<Vec<u8>>> {
 }
 
 #[derive(Deserialize)]
+struct ArmedReq {
+    armed: bool,
+}
+
+#[derive(Deserialize)]
+struct ShowReq {
+    name: Option<String>,
+    #[serde(default)]
+    overwrite: bool,
+}
+
+#[derive(Deserialize)]
+struct UploadReq {
+    name: String,
+    config: Config,
+    #[serde(default)]
+    overwrite: bool,
+}
+
+fn need(name: Option<String>) -> Result<String, String> {
+    name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).ok_or_else(|| "give a show name".to_string())
+}
+
+fn body<T: serde::de::DeserializeOwned>(req: &mut Request) -> Result<T, String> {
+    serde_json::from_str(&read_body(req)?).map_err(|e| format!("bad request: {e}"))
+}
+
+#[derive(Deserialize)]
 struct FireReq {
     id: Option<String>,
     commands: Option<Vec<Command>>,
@@ -63,7 +98,9 @@ fn handle(app: &Arc<App>, mut req: Request) {
             .with_header(header("Content-Type", "text/html; charset=utf-8"))
             .with_header(header("Cache-Control", "no-store")),
         (Method::Get, "/api/status") => {
-            let s = app.status.lock().unwrap().clone();
+            let mut s = app.status.lock().unwrap().clone();
+            s.armed = app.armed.load(Ordering::SeqCst);
+            s.show = app.show.lock().unwrap().clone();
             json(200, serde_json::to_string(&s).unwrap())
         }
         (Method::Get, "/api/devices") => {
@@ -75,32 +112,67 @@ fn handle(app: &Arc<App>, mut req: Request) {
             let c = app.config.lock().unwrap().clone();
             json(200, serde_json::to_string(&c).unwrap())
         }
-        (Method::Put, "/api/config") | (Method::Post, "/api/config") => match read_body(&mut req) {
+        (Method::Put, "/api/config") | (Method::Post, "/api/config") => {
+            match body::<Config>(&mut req).and_then(|c| shows::apply(app, c)) {
+                Ok(c) => json(200, serde_json::to_string(&c).unwrap()),
+                Err(e) => error(400, &e),
+            }
+        }
+        (Method::Post, "/api/armed") => match body::<ArmedReq>(&mut req) {
             Err(e) => error(400, &e),
-            Ok(body) => match serde_json::from_str::<Config>(&body) {
-                Err(e) => error(400, &format!("bad config: {e}")),
-                Ok(mut c) => match c.validate() {
-                    Err(e) => error(400, &e),
-                    Ok(()) => match c.save(&app.config_path) {
-                        Err(e) => error(500, &format!("save: {e}")),
-                        Ok(()) => {
-                            let audio_changed = {
-                                let mut cur = app.config.lock().unwrap();
-                                let changed = cur.audio_device != c.audio_device
-                                    || cur.audio_channel != c.audio_channel
-                                    || cur.sample_rate != c.sample_rate;
-                                *cur = c.clone();
-                                changed
-                            };
-                            if audio_changed {
-                                app.audio_gen.fetch_add(1, Ordering::SeqCst);
-                            }
-                            let _ = app.engine_tx.lock().unwrap().send(EngineMsg::ConfigChanged);
-                            json(200, serde_json::to_string(&c).unwrap())
-                        }
-                    },
-                },
-            },
+            Ok(r) => {
+                app.armed.store(r.armed, Ordering::SeqCst);
+                eprintln!("cues {}", if r.armed { "active" } else { "stopped" });
+                match shows::save_state(app) {
+                    Ok(()) => json(200, serde_json::json!({ "armed": r.armed }).to_string()),
+                    Err(e) => error(500, &format!("cues {} but not saved: {e}", if r.armed { "active" } else { "stopped" })),
+                }
+            }
+        },
+        (Method::Get, "/api/shows") => {
+            let cur = app.show.lock().unwrap().clone();
+            json(200, serde_json::json!({ "current": cur, "shows": shows::list(app) }).to_string())
+        }
+        (Method::Post, "/api/shows/save") => match body::<ShowReq>(&mut req) {
+            Err(e) => error(400, &e),
+            Ok(r) => {
+                let exists = r.name.as_deref().is_some_and(|n| shows::list(app).iter().any(|s| s.name == n.trim()));
+                let is_current = r.name.as_deref().map(str::trim) == app.show.lock().unwrap().as_deref();
+                if exists && !is_current && !r.overwrite {
+                    error(409, "a show with this name exists")
+                } else {
+                    match shows::save(app, r.name.as_deref()) {
+                        Ok(name) => json(200, serde_json::json!({ "current": name }).to_string()),
+                        Err(e) => error(400, &e),
+                    }
+                }
+            }
+        },
+        (Method::Post, "/api/shows/load") => match body::<ShowReq>(&mut req).and_then(|r| need(r.name)).and_then(|n| shows::load(app, &n)) {
+            Ok(c) => json(200, serde_json::to_string(&c).unwrap()),
+            Err(e) => error(400, &e),
+        },
+        (Method::Post, "/api/shows/delete") => match body::<ShowReq>(&mut req).and_then(|r| need(r.name)).and_then(|n| shows::delete(app, &n)) {
+            Ok(()) => json(200, "{}".into()),
+            Err(e) => error(400, &e),
+        },
+        (Method::Post, "/api/shows/get") => match body::<ShowReq>(&mut req).and_then(|r| need(r.name)).and_then(|n| shows::file(app, &n)) {
+            Ok(text) => json(200, text),
+            Err(e) => error(404, &e),
+        },
+        (Method::Post, "/api/shows/upload") => match body::<UploadReq>(&mut req) {
+            Err(e) => error(400, &e),
+            Ok(mut r) => {
+                let name = r.name.trim().to_string();
+                if !r.overwrite && shows::list(app).iter().any(|s| s.name == name) {
+                    error(409, "a show with this name exists")
+                } else {
+                    match r.config.validate().and_then(|()| shows::write(app, &name, &r.config)) {
+                        Ok(()) => json(200, serde_json::json!({ "name": name }).to_string()),
+                        Err(e) => error(400, &e),
+                    }
+                }
+            }
         },
         (Method::Post, "/api/fire") => match read_body(&mut req).and_then(|b| {
             serde_json::from_str::<FireReq>(&b).map_err(|e| format!("bad request: {e}"))

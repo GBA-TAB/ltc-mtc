@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4 (2026-10-21)
+
+- **Shows**: named snapshots of the whole device state (settings, MIDI/MTC routing, OSC
+  targets, cues) in `shows/`, with **Load…**, **Save** and **Save as…** in the header. The
+  Load dialog lists the shows (cues, date) and downloads, uploads and deletes show files.
+- **Start/stop switch for the cues** (● CUES ACTIVE / ■ CUES STOPPED), immediate, kept over
+  a restart. MTC and the Test buttons work while stopped, and starting again does not fire the
+  cues that passed while stopped.
+- **Cue sets**: Export cues includes the OSC targets the cues use. Import cues adds targets the
+  show lacks and keeps the show's own settings for targets it has.
+- `state.json` holds the current show and the switch. Test script: `shows-test.sh`.
+
 ## 0.3 (2026-10-20)
 
 - **OSC commands** in events, mixed freely with MIDI commands. An OSC command has an address

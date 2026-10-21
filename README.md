@@ -14,9 +14,12 @@ An SMPTE LTC reader for the Raspberry Pi (3 and later) and other Linux machines:
 - **sends OSC messages at given timecodes**, in the same events as the MIDI commands: an OSC
   address with typed arguments, sent to a target from a list (QLab, a console, ...) over UDP
   or TCP;
+- keeps **shows**: named snapshots of the whole device state (settings, routing, cues) with
+  **Load**, **Save** and **Save as**. Show files can be downloaded and uploaded;
+- has a **start/stop switch** for the cues. MTC keeps running while the cues are stopped;
 - has a **web interface** to choose the audio input and channel, the MIDI outputs (ALSA
   sequencer ports), the OSC targets, the frame rate, and to edit, test, import and export
-  the events.
+  the cues.
 
 ![screenshot](docs/screenshot.png)
 
@@ -46,7 +49,16 @@ deploy/install.sh
 `deploy/install.sh --port N` (the script checks that the port is free).
 
 The service runs with real-time priority for the audio and MIDI threads, under a dynamic user
-in the `audio` group, and keeps its settings in `/var/lib/ltc-mtc/config.json`.
+in the `audio` group. Its files are in `/var/lib/ltc-mtc/`:
+
+| File | Holds |
+|---|---|
+| `config.json` | the active state: settings, routing, OSC targets, cues |
+| `shows/<name>.json` | the saved shows, in the same format |
+| `state.json` | the current show and whether the cues are active |
+
+Each file is written through a temporary file and a rename, so a power cut never leaves half
+a file.
 
 To show the interface on a screen attached to the Pi, run
 `chromium-browser --kiosk http://localhost:8088/`.
@@ -68,6 +80,43 @@ To show the interface on a screen attached to the Pi, run
    address (`/cue/12/go`) and any number of arguments (**+ arg**). **▶ Test** sends an
    event's commands immediately. **Save** (or Ctrl+S) stores the list and makes it active.
 5. **Fired** lists what was sent, with the wall clock time and the timecode.
+
+### Shows
+
+A show is the whole device state: the audio input, the MIDI and MTC routing, the OSC
+targets and all the cues. The header shows the current show.
+
+- **Save** (Ctrl+S) makes your edits active and writes them to the current show. If no show
+  is loaded yet, it works like **Save as…**.
+- **Save as…** asks for a name. It does not replace an existing show without asking.
+- **Load…** lists the shows on the device, with their number of cues and the date they were
+  saved. **Load** makes a show active (unsaved edits are discarded after a question). **⇩**
+  downloads the show file and **✕** deletes it. **Upload show file…** stores a downloaded
+  show on this or another device.
+- **Revert** discards the edits since the last Save.
+
+Show names may use letters (any language), digits, spaces and `- _ . ( ) + &`, up to 64
+characters.
+
+### Starting and stopping the cues
+
+The button next to the title switches between **● CUES ACTIVE** and **■ CUES STOPPED**.
+The change is immediate; it needs no Save. While the cues are stopped:
+
+- no cue fires, and the timecode display is struck through;
+- MTC keeps running, and **▶ Test** still sends;
+- after a restart, the cues are still stopped.
+
+When you start again, cues that passed while stopped do not fire afterwards. Firing goes on
+from the current position.
+
+### Cue sets
+
+**Export cues** downloads the cues together with the OSC targets they use. **Import cues**
+reads such a file (or a show file, or an older export) and replaces or adds to the cues. OSC
+targets the cues need are added when the show does not have them. A target the show already
+has keeps its own host and port, so a cue set moves between venues without changing their
+addresses. The import is not saved until you press **Save**.
 
 Outputs are stored by port name ("Client:Port"), so a USB MIDI interface is found again
 after it is unplugged, plugged in elsewhere or renumbered. Missing outputs are shown in red at
@@ -131,6 +180,11 @@ The web page uses a small JSON API, which other tools can use too:
 | `GET /api/devices` | audio inputs and MIDI outputs |
 | `GET /api/config`, `PUT /api/config` | settings and events (validated and saved) |
 | `POST /api/fire` | `{"id": "e3"}` fires a saved event; `{"commands": [...]}` sends commands |
+| `POST /api/armed` | `{"armed": true\|false}` starts or stops the cues |
+| `GET /api/shows` | the current show and the list of shows |
+| `POST /api/shows/save` | `{"name"?, "overwrite"?}` saves the active state (as the current show without a name) |
+| `POST /api/shows/load` | `{"name"}` makes a show active |
+| `POST /api/shows/get`, `/upload`, `/delete` | download, store (`{"name", "config", "overwrite"?}`) and delete show files |
 
 An event in the config:
 
@@ -158,17 +212,20 @@ runs ltc-mtc on it with Midi Through as the output, and shows what `aseqdump` re
 output, and MTC on its own port, with MTC on and off. `scripts/osc-test.sh [BINARY udp|tcp|tcp-len]`
 sends OSC to `scripts/osc-listen.py`. It covers all argument types, IP and named targets, a
 name that does not resolve, and the timing. `scripts/osc-reconnect-test.sh` stops and restarts
-a TCP target.
+a TCP target. `scripts/shows-test.sh` covers shows and the start/stop switch through the API:
+save as, save, load, names, overwrite protection, upload, delete, stopped cues, and a
+restart.
 `scripts/ui-demo.sh start|stop` keeps LTC running for a look at the web interface on port
 8088 (`LTC_DEMO_PORT` to change it).
 
 ## Status
 
-Version 0.3 (2026-10-20; changes in [CHANGELOG.md](CHANGELOG.md)). Tested on a Raspberry Pi 5 (Raspberry Pi OS trixie, arm64) with
+Version 0.4 (2026-10-21; changes in [CHANGELOG.md](CHANGELOG.md)). Tested on a Raspberry Pi 5 (Raspberry Pi OS trixie, arm64) with
 LTC played through `snd-aloop` at 24, 25, 29.97 drop-frame and 30 fps. The tests cover
 decoding, MTC (piece order, continuity, rate code), events on the exact frame, routing to
 separate outputs, MTC on and off, OSC over UDP and both TCP framings (timing within a few
-milliseconds, a TCP target restarting), the systemd sandbox (real-time priority, saved settings),
+milliseconds, a TCP target restarting), shows and the start/stop switch (through the API and by clicking
+through the page in a browser), the systemd sandbox (real-time priority, saved settings),
 and the web interface.
 
 Not yet tested: a real Pi 3, LTC from a real source through a USB audio interface, USB MIDI

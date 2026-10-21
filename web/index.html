@@ -18,6 +18,25 @@ header { display: flex; align-items: center; gap: 12px; padding: 10px 16px;
   border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 5; }
 header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .02em; }
 header .spacer { flex: 1; }
+header { flex-wrap: wrap; }
+.showname { font-size: 13px; color: var(--dim); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.showname b { color: var(--text); }
+button.arm { font-weight: 700; letter-spacing: .04em; padding: 6px 14px; border-width: 2px; }
+button.arm.on { color: var(--ok); border-color: var(--ok); background: rgba(60, 207, 122, .12); }
+button.arm.off { color: #fff; border-color: var(--bad); background: var(--bad); }
+.tc.disarmed { text-decoration: line-through 3px var(--bad); }
+dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 12px; padding: 18px;
+  width: min(560px, calc(100% - 32px)); }
+dialog::backdrop { background: rgba(0, 0, 0, .55); }
+dialog h3 { margin: 0 0 12px; font-size: 16px; }
+.dlg-list { display: flex; flex-direction: column; gap: 6px; max-height: 50vh; overflow: auto; margin-bottom: 12px; }
+.dlg-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel2); }
+.dlg-row.cur { border-color: var(--accent); }
+.dlg-row .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.dlg-row .meta { font-size: 12px; color: var(--dim); white-space: nowrap; }
+.dlg-foot { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.dlg-foot .spacer { flex: 1; }
+dialog input.name { width: 100%; margin-bottom: 12px; font-size: 15px; }
 .dirty { color: var(--warn); font-size: 13px; display: none; }
 .dirty.on { display: inline; }
 button { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 6px;
@@ -108,11 +127,16 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 14px 0 12px; }
 <header>
   <h1>LTC &rarr; MTC</h1>
   <span id="conn" class="badge">connecting</span>
+  <button id="arm" class="arm" title="Start or stop firing cues (MTC keeps running)">…</button>
   <span class="spacer"></span>
+  <span class="showname" title="Current show">Show: <b id="showname">–</b></span>
   <span id="dirty" class="dirty">unsaved changes</span>
-  <button id="revert" class="small" title="Reload the saved configuration">Revert</button>
-  <button id="save" class="primary" disabled title="Ctrl+S">Save</button>
+  <button id="revert" class="small" title="Discard unsaved changes">Revert</button>
+  <button id="load" title="Load a show">Load…</button>
+  <button id="saveas" title="Save as a new show">Save as…</button>
+  <button id="save" title="Apply the changes and save the show (Ctrl+S)">Save</button>
 </header>
+<dialog id="dlg"></dialog>
 
 <main>
   <section class="card hero">
@@ -139,8 +163,8 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 14px 0 12px; }
       <button id="add">+ Event</button>
       <button id="addnow" title="New event at the current timecode">+ At current TC</button>
       <span class="spacer"></span>
-      <button id="export" class="small">Export</button>
-      <button id="import" class="small">Import</button>
+      <button id="export" class="small" title="Download the cues (and the OSC targets they use)">Export cues</button>
+      <button id="import" class="small" title="Add or replace cues from a cue set or show file">Import cues</button>
       <input id="importfile" type="file" accept="application/json,.json" hidden>
     </div>
     <div id="events" class="events"></div>
@@ -240,7 +264,7 @@ function isDirty() { return saved && JSON.stringify(saved) !== JSON.stringify(cf
 function markDirty() {
   const d = isDirty();
   $("dirty").classList.toggle("on", !!d);
-  $("save").disabled = !d;
+  $("save").classList.toggle("primary", !!d);
 }
 
 /* ---------- settings ---------- */
@@ -558,30 +582,173 @@ async function loadConfig() {
   cfg = JSON.parse(JSON.stringify(saved));
   renderSettings(); renderTargets(); renderEvents(); markDirty();
 }
-async function save() {
-  for (const ev of cfg.events) if (!normTc(ev.time)) return toast(`Bad time ${ev.time}`, true);
-  for (const t of cfg.osc_targets) if (!t.name || !t.host) return toast("Every OSC target needs a name and a host", true);
+let currentShow = null;
+function setShow(name) {
+  currentShow = name || null;
+  $("showname").textContent = currentShow || "(not saved as a show)";
+}
+function checkEdits() {
+  for (const ev of cfg.events) if (!normTc(ev.time)) return `Bad time ${ev.time}`;
+  for (const t of cfg.osc_targets) if (!t.name || !t.host) return "Every OSC target needs a name and a host";
   for (const ev of cfg.events) for (const c of ev.commands) {
-    if (c.type === "osc" && !oscAddrOk(c.address)) return toast(`Bad OSC address "${c.address}" (${ev.time})`, true);
+    if (c.type === "osc" && !oscAddrOk(c.address)) return `Bad OSC address "${c.address}" (${ev.time})`;
   }
+  return null;
+}
+/** Makes the edits active (and stores them as the device's active config). */
+async function apply() {
+  const bad = checkEdits();
+  if (bad) throw new Error(bad);
+  if (!isDirty()) return;
+  saved = await api("PUT", "/api/config", cfg);
+  cfg = JSON.parse(JSON.stringify(saved));
+  renderSettings(); renderTargets(); renderEvents(); markDirty();
+}
+async function save() {
+  if (!currentShow) return saveAs();
   try {
-    saved = await api("PUT", "/api/config", cfg);
-    cfg = JSON.parse(JSON.stringify(saved));
-    renderSettings(); renderTargets(); renderEvents(); markDirty();
-    toast("Saved");
+    await apply();
+    await api("POST", "/api/shows/save", {});
+    toast(`Saved "${currentShow}"`);
   } catch (e) { toast("Not saved: " + e.message, true); }
 }
+async function saveAs() {
+  const name = await askName("Save show as", currentShow || "", "Save");
+  if (!name) return;
+  try {
+    await apply();
+    try { await api("POST", "/api/shows/save", { name }); }
+    catch (e) {
+      if (!/exists/.test(e.message) || !confirm(`A show "${name}" exists. Replace it?`)) throw e;
+      await api("POST", "/api/shows/save", { name, overwrite: true });
+    }
+    setShow(name);
+    toast(`Saved as "${name}"`);
+  } catch (e) { toast("Not saved: " + e.message, true); }
+}
+const SHOW_NAME_RE = /^[\p{L}\p{N}_\-.()+& ]{1,64}$/u;
+const showNameOk = (n) => SHOW_NAME_RE.test(n) && !/^[. ]/.test(n) && !/ $/.test(n);
+/** A small dialog asking for a show name; resolves to the name or null. */
+function askName(title, value, okLabel) {
+  return new Promise((resolve) => {
+    const d = $("dlg");
+    d.innerHTML = "";
+    const input = el("input", { class: "name", value, placeholder: "Show name", maxLength: 64 });
+    const ok = el("button", { class: "primary" }, okLabel);
+    const check = () => { const v = input.value.trim(); ok.disabled = !showNameOk(v); input.classList.toggle("bad", !!v && !showNameOk(v)); };
+    input.oninput = check;
+    const done = (v) => { d.close(); resolve(v); };
+    ok.onclick = () => done(input.value.trim());
+    input.onkeydown = (e) => { if (e.key === "Enter" && !ok.disabled) done(input.value.trim()); };
+    d.append(el("h3", {}, title), input,
+      el("p", { class: "hint" }, "Letters, digits, spaces and - _ . ( ) + & — up to 64 characters."),
+      el("div", { class: "dlg-foot" }, el("button", { onclick: () => done(null) }, "Cancel"), ok));
+    d.onclose = () => resolve(null);
+    check();
+    d.showModal();
+    input.select();
+  });
+}
+async function openLoad() {
+  let list;
+  try { list = await api("GET", "/api/shows"); } catch (e) { return toast(e.message, true); }
+  const d = $("dlg");
+  d.innerHTML = "";
+  const rows = el("div", { class: "dlg-list" });
+  if (!list.shows.length) rows.append(el("p", { class: "hint" }, "No shows on this device yet. Use “Save as…” or upload a show file."));
+  for (const sh of list.shows) {
+    const when = sh.modified ? new Date(sh.modified).toLocaleString() : "";
+    rows.append(el("div", { class: "dlg-row" + (sh.name === list.current ? " cur" : "") },
+      el("span", { class: "nm", title: sh.name }, sh.name + (sh.name === list.current ? "  (current)" : "")),
+      el("span", { class: "meta" }, `${sh.events} cues · ${when}`),
+      el("button", { class: "small primary", onclick: () => loadShow(sh.name) }, "Load"),
+      el("button", { class: "small", title: "Download the show file", onclick: () => downloadShow(sh.name) }, "⇩"),
+      el("button", { class: "icon", title: "Delete", onclick: () => deleteShow(sh.name) }, "✕")));
+  }
+  const up = el("input", { type: "file", accept: "application/json,.json", hidden: true });
+  up.onchange = () => { const f = up.files[0]; if (f) uploadShow(f); };
+  d.append(el("h3", {}, "Shows on this device"), rows,
+    el("div", { class: "dlg-foot" }, up, el("button", { onclick: () => up.click() }, "Upload show file…"),
+      el("span", { class: "spacer" }), el("button", { onclick: () => d.close() }, "Close")));
+  d.onclose = null;
+  if (!d.open) d.showModal();
+}
+async function loadShow(name) {
+  if (isDirty() && !confirm(`Discard unsaved changes and load "${name}"?`)) return;
+  try {
+    await api("POST", "/api/shows/load", { name });
+    $("dlg").close();
+    setShow(name);
+    await loadConfig();
+    await loadDevices();
+    toast(`Loaded "${name}"`);
+  } catch (e) { toast("Not loaded: " + e.message, true); }
+}
+async function downloadShow(name) {
+  try {
+    const r = await fetch("/api/shows/get", { method: "POST", body: JSON.stringify({ name }) });
+    if (!r.ok) throw new Error((await r.json()).error);
+    download(await r.text(), `${name}.json`);
+  } catch (e) { toast(e.message, true); }
+}
+async function deleteShow(name) {
+  if (!confirm(`Delete the show "${name}" from this device?`)) return;
+  try {
+    await api("POST", "/api/shows/delete", { name });
+    if (name === currentShow) setShow(null);
+    openLoad();
+  } catch (e) { toast(e.message, true); }
+}
+async function uploadShow(file) {
+  let config;
+  try { config = JSON.parse(await file.text()); } catch (e) { return toast("Not a JSON file", true); }
+  if (!config || typeof config !== "object" || Array.isArray(config) || !("events" in config)) return toast("Not a show file (use Import for cue sets)", true);
+  const name = await askName("Upload show as", file.name.replace(/\.json$/i, "").slice(0, 64), "Upload");
+  if (!name) return openLoad();
+  try {
+    try { await api("POST", "/api/shows/upload", { name, config }); }
+    catch (e) {
+      if (!/exists/.test(e.message) || !confirm(`A show "${name}" exists. Replace it?`)) throw e;
+      await api("POST", "/api/shows/upload", { name, config, overwrite: true });
+    }
+    toast(`Uploaded "${name}" — load it to use it`);
+  } catch (e) { toast("Not uploaded: " + e.message, true); }
+  openLoad();
+}
+function download(text, filename) {
+  const a = el("a", { href: URL.createObjectURL(new Blob([text], { type: "application/json" })), download: filename });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+setShow(null);
 $("save").onclick = save;
+$("saveas").onclick = saveAs;
+$("load").onclick = openLoad;
+
+/* ---------- cues start / stop ---------- */
+let armed = null;
+function renderArm(a) {
+  armed = a;
+  const b = $("arm");
+  b.textContent = a ? "● CUES ACTIVE" : "■ CUES STOPPED";
+  b.className = "arm " + (a ? "on" : "off");
+  $("tc").classList.toggle("disarmed", !a);
+}
+$("arm").onclick = async () => {
+  try { const r = await api("POST", "/api/armed", { armed: !armed }); renderArm(r.armed); }
+  catch (e) { toast(e.message, true); }
+};
 $("revert").onclick = () => { if (!isDirty() || confirm("Discard unsaved changes?")) loadConfig(); };
 document.addEventListener("keydown", (e) => {
-  if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); if (isDirty()) save(); }
+  if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); save(); }
 });
 window.addEventListener("beforeunload", (e) => { if (isDirty()) { e.preventDefault(); e.returnValue = ""; } });
 
+/* A cue set: the events plus the OSC targets they use, so it can go into another show. */
 $("export").onclick = () => {
-  const blob = new Blob([JSON.stringify({ events: cfg.events }, null, 2)], { type: "application/json" });
-  const a = el("a", { href: URL.createObjectURL(blob), download: "ltc-mtc-events.json" });
-  document.body.append(a); a.click(); a.remove();
+  const used = new Set(cfg.events.flatMap((ev) => ev.commands.filter((c) => c.type === "osc").map((c) => c.target)));
+  const set = { format: "ltc-mtc cue set", version: 1, events: cfg.events, osc_targets: cfg.osc_targets.filter((t) => used.has(t.name)) };
+  download(JSON.stringify(set, null, 2), `${currentShow || "ltc-mtc"} cues.json`);
 };
 $("import").onclick = () => $("importfile").click();
 $("importfile").onchange = async (e) => {
@@ -592,12 +759,22 @@ $("importfile").onchange = async (e) => {
     const j = JSON.parse(await f.text());
     const evs = Array.isArray(j) ? j : j.events;
     if (!Array.isArray(evs)) throw new Error("no events in file");
-    const replace = confirm(`Import ${evs.length} events.\nOK = replace the current list, Cancel = add to it.`);
+    const replace = confirm(`Import ${evs.length} cues.\nOK = replace the current cues, Cancel = add them.`);
     const clean = evs.map((v) => ({ id: newId(), name: String(v.name || ""), time: normTc(String(v.time || "")) || "00:00:00:00",
       enabled: v.enabled !== false, commands: Array.isArray(v.commands) ? v.commands : [] }));
     cfg.events = replace ? clean : cfg.events.concat(clean);
-    sortEvents(); markDirty(); renderEvents();
-    toast("Imported — press Save to keep");
+    // OSC targets the cues need: added when missing; an existing target of the same name is kept.
+    const added = [], kept = [];
+    for (const t of Array.isArray(j.osc_targets) ? j.osc_targets : []) {
+      const have = cfg.osc_targets.find((o) => o.name === t.name);
+      if (!have) { cfg.osc_targets.push({ name: t.name, host: t.host, port: t.port, protocol: t.protocol || "udp" }); added.push(t.name); }
+      else if (have.host !== t.host || have.port !== t.port || (have.protocol || "udp") !== (t.protocol || "udp")) kept.push(t.name);
+    }
+    sortEvents(); markDirty(); renderTargets(); renderEvents();
+    let msg = `Imported ${clean.length} cues`;
+    if (added.length) msg += `, added OSC targets: ${added.join(", ")}`;
+    if (kept.length) msg += `. Kept this show's settings for: ${kept.join(", ")}`;
+    toast(msg + " — press Save to keep", kept.length > 0);
   } catch (err) { toast("Import: " + err.message, true); }
 };
 
@@ -608,6 +785,8 @@ function setBadge(id, text, kind) {
   b.className = "badge" + (kind ? " " + kind : "");
 }
 function renderStatus(s) {
+  if (s.armed !== armed) renderArm(s.armed);
+  if ((s.show || null) !== currentShow) setShow(s.show);
   const tc = $("tc");
   tc.textContent = s.tc;
   tc.classList.toggle("stopped", !s.running);

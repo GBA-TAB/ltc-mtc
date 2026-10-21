@@ -264,8 +264,9 @@ impl Engine {
             }
         }
 
-        // Events.
-        if !f.reverse {
+        // Events (only while cues are active; the position is followed either way, so starting
+        // again does not fire what passed while stopped).
+        if !f.reverse && self.app.armed.load(std::sync::atomic::Ordering::SeqCst) {
             let w = Window::new(self.fired_upto, idx, fps, self.max_gap);
             let due: Vec<CueEvent> = self
                 .events
