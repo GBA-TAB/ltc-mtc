@@ -214,7 +214,8 @@ sends OSC to `scripts/osc-listen.py`. It covers all argument types, IP and named
 name that does not resolve, and the timing. `scripts/osc-reconnect-test.sh` stops and restarts
 a TCP target. `scripts/shows-test.sh` covers shows and the start/stop switch through the API:
 save as, save, load, names, overwrite protection, upload, delete, stopped cues, and a
-restart.
+restart. `scripts/ui-e2e.js` clicks through the page in headless Chromium (Node and
+`playwright-core`).
 `scripts/ui-demo.sh start|stop` keeps LTC running for a look at the web interface on port
 8088 (`LTC_DEMO_PORT` to change it).
 
