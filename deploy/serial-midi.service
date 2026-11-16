@@ -1,0 +1,18 @@
+[Unit]
+Description=MIDI board on the serial line (/dev/ttyAMA0) as the sequencer port "Serial MIDI:MIDI"
+After=sound.target dev-ttyAMA0.device
+Requires=dev-ttyAMA0.device
+Before=ltc-mtc.service
+
+[Service]
+ExecStart=/usr/local/bin/serial-midi --device /dev/ttyAMA0 --baud 38400 --name "Serial MIDI"
+DynamicUser=yes
+SupplementaryGroups=audio dialout
+# Real-time priority, like ltc-mtc's MIDI thread.
+AmbientCapabilities=CAP_SYS_NICE
+LimitRTPRIO=80
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

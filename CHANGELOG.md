@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **`serial-midi`**: a MIDI board on the Pi's serial port (GPIO 14/15, e.g. the OSA MIDI
+  board) as the sequencer port **Serial MIDI:MIDI**, both directions, with the systemd unit
+  `deploy/serial-midi.service`. Setup (`midi-uart0`, `disable-bt`, serial console off) in the
+  README.
+- `deploy/install.sh` is executable in the repository, so `deploy/install.sh` works as the
+  README says after a fresh clone.
+- Tested on a Raspberry Pi 3 with a USB audio interface (README, Status).
+
 ## 0.4 (2026-10-21)
 
 - **Shows**: named snapshots of the whole device state (settings, MIDI/MTC routing, OSC

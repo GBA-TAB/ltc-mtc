@@ -27,7 +27,9 @@ An SMPTE LTC reader for the Raspberry Pi (3 and later) and other Linux machines:
 
 The Pi has no audio input, so you need a USB audio interface (any class-compliant one) with
 LTC on a line input. Levels from about -50 dBFS to full scale work. For MIDI out, use USB
-MIDI interfaces (as many as needed), or any sequencer client on the Pi.
+MIDI interfaces (as many as needed), a MIDI board on the Pi's serial port (see
+[MIDI board on the serial port](#midi-board-on-the-serial-port)), or any sequencer client on
+the Pi.
 
 ltc-mtc is the sequencer client **LTC-MTC** with two ports, which `aconnect` and other
 programs can also connect to: **LTC-MTC:out** carries the commands that use the default
@@ -62,6 +64,41 @@ a file.
 
 To show the interface on a screen attached to the Pi, run
 `chromium-browser --kiosk http://localhost:8088/`.
+
+### MIDI board on the serial port
+
+A MIDI board on the GPIO header (MIDI IN/OUT on GPIO 14/15, such as the OSA MIDI board for
+the DACBerry) is a serial line, not an ALSA device. `serial-midi`, built along with ltc-mtc,
+makes it the sequencer client **Serial MIDI** with one port, **Serial MIDI:MIDI**: what is
+sent to the port goes out on MIDI OUT, and what comes in on MIDI IN is sent to the port's
+subscribers.
+
+1. In `/boot/firmware/config.txt`, give GPIO 14/15 the full UART at the MIDI rate. On a Pi 3
+   and 4 this switches Bluetooth off:
+
+   ```
+   enable_uart=1
+   dtoverlay=disable-bt
+   dtoverlay=midi-uart0
+   ```
+
+   `midi-uart0` makes a requested 38400 baud come out as 31250, which is why `serial-midi`
+   asks for 38400.
+2. Remove `console=serial0,115200` from `/boot/firmware/cmdline.txt`, so no login console
+   writes to the MIDI port, and reboot. `/dev/ttyAMA0` then exists.
+3. Install and start the service (after `deploy/install.sh` has built everything):
+
+   ```sh
+   sudo install -m 755 target/release/serial-midi /usr/local/bin/
+   sudo install -m 644 deploy/serial-midi.service /etc/systemd/system/
+   sudo systemctl daemon-reload && sudo systemctl enable --now serial-midi
+   ```
+4. Choose **Serial MIDI:MIDI** as the commands output and/or the MTC output in the web page.
+
+`serial-midi [--device /dev/ttyAMA0] [--baud 38400] [--name "Serial MIDI"]` runs it by hand.
+It sends full status bytes on every message (no running status), so a receiver that starts
+late locks on at the next message. `sudo cat /proc/tty/driver/ttyAMA` shows the bytes sent
+(`tx`) and received (`rx`).
 
 ## Using it
 
@@ -229,8 +266,14 @@ milliseconds, a TCP target restarting), shows and the start/stop switch (through
 through the page in a browser), the systemd sandbox (real-time priority, saved settings),
 and the web interface.
 
-Not yet tested: a real Pi 3, LTC from a real source through a USB audio interface, USB MIDI
-interfaces, and real OSC devices (QLab, consoles).
+Also tested on a Raspberry Pi 3 (Debian trixie, arm64; build 3.5 minutes): all of the tests
+above except the browser click-through, and LTC through a USB audio interface (Sound Devices
+USBPre2, LTC generated on the Pi and looped back from an analogue output to a line input,
+locked at -7 dBFS, cues on the exact frame). Through `serial-midi` and an OSA MIDI board, the
+UART sent exactly the bytes of the MTC and cues that ltc-mtc produced (2399 bytes for 12 s).
+
+Not yet tested: LTC from an external source, the MIDI signal on the board's sockets and its
+MIDI IN, USB MIDI interfaces, and real OSC devices (QLab, consoles).
 
 ## Building
 
