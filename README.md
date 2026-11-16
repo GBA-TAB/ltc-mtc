@@ -271,9 +271,12 @@ above except the browser click-through, and LTC through a USB audio interface (S
 USBPre2, LTC generated on the Pi and looped back from an analogue output to a line input,
 locked at -7 dBFS, cues on the exact frame). Through `serial-midi` and an OSA MIDI board, the
 UART sent exactly the bytes of the MTC and cues that ltc-mtc produced (2399 bytes for 12 s).
+With a MIDI cable from the board's MIDI OUT to its MIDI IN, every byte came back (2407 of
+2407) as the same events: the commands, the Full Frame, and 1192 quarter frames in order,
+giving a continuous timecode at the 25 fps rate code.
 
-Not yet tested: LTC from an external source, the MIDI signal on the board's sockets and its
-MIDI IN, USB MIDI interfaces, and real OSC devices (QLab, consoles).
+Not yet tested: LTC from an external source, an external MIDI device on the board, USB MIDI
+interfaces, and real OSC devices (QLab, consoles).
 
 ## Building
 
